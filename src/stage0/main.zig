@@ -481,7 +481,7 @@ pub const Node = union(enum) {
     scope: struct {
         // lbrace: Span,
         stmts: NodeRange,
-        break_expr: NodeId,
+        has_trailing_semi: bool,
         // rbrace: Span,
     },
     param: struct {
@@ -499,6 +499,23 @@ pub const Node = union(enum) {
         op: UnaryOp,
         val: NodeId,
     },
+    field_acc: struct {
+        val: NodeId,
+        ident: Span,
+    },
+    index_acc: struct {
+        val: NodeId,
+        // lbracket: Span,
+        expr: NodeId,
+        // rbracket: Span,
+    },
+    call: struct {
+        val: NodeId,
+        args: NodeRange,
+    },
+    access: struct {
+        ident: Span,
+    },
     str_lit: struct {
         tok: Span,
     },
@@ -507,11 +524,11 @@ pub const Node = union(enum) {
         val: u8,
     },
     int_lit: struct {
-        tok: Span,
+        // tok: Span,
         val: u64,
     },
     float_lit: struct {
-        tok: Span,
+        // tok: Span,
         val: f64,
     },
 };
@@ -577,12 +594,134 @@ pub const Parser = struct {
         try self.nodes.ensureTotalCapacity(self.alloc, self.source.len / 3);
         self.nodes.clearRetainingCapacity();
 
-        const root = try self.allocNode(undefined); // reserve idx 0 as the ast root
+        const root = try self.allocNode(.{ .struct_contents = undefined }); // reserve idx 0 as the ast root
         std.debug.assert(root == 0);
         self.nodes.items[0] = try self.parseFile();
+
+        // for (self.nodes.items, 0..) |node, i|
+        //     std.debug.print("id={} node={}\n", .{ i, node });
+        self.print(0, 0);
+    }
+
+    fn indent(depth: usize) void {
+        for (0..depth) |_| std.debug.print("| ", .{});
+    }
+
+    pub fn print(self: *@This(), node: NodeId, depth: usize) void {
+        indent(depth);
+        // std.debug.print("id={} ", .{node});
+
+        switch (self.nodes.items[node]) {
+            .@"struct" => |v| {
+                std.debug.print("struct:\n", .{});
+                self.print(v.contents, depth + 1);
+            },
+            .struct_contents => |v| {
+                std.debug.print("struct_contents:\n", .{});
+                for (v.fields.low..v.fields.high) |i|
+                    self.print(@truncate(i), depth + 1);
+                for (v.decls.low..v.decls.high) |i|
+                    self.print(@truncate(i), depth + 1);
+            },
+            .field => |v| {
+                std.debug.print("field name='{s}':\n", .{
+                    self.readSpan(v.ident),
+                });
+                self.print(v.type, depth + 1);
+                if (v.default) |default|
+                    self.print(default, depth + 1);
+            },
+            .decl => |v| {
+                std.debug.print("decl mut={} name='{s}':\n", .{
+                    v.mut,
+                    self.readSpan(v.ident),
+                });
+                self.print(v.expr, depth + 1);
+            },
+            .@"fn" => |v| {
+                std.debug.print("fn:\n", .{});
+                indent(depth + 1);
+                std.debug.print("params:\n", .{});
+                for (v.params.low..v.params.high) |i|
+                    self.print(@truncate(i), depth + 2);
+                self.print(v.scope, depth + 1);
+            },
+            .scope => |v| {
+                std.debug.print("scope autoreturn={}:\n", .{
+                    !v.has_trailing_semi,
+                });
+                for (v.stmts.low..v.stmts.high) |i|
+                    self.print(@truncate(i), depth + 1);
+            },
+            .param => |v| {
+                std.debug.print("param name='{s}':\n", .{
+                    self.readSpan(v.ident),
+                });
+                self.print(v.type, depth + 1);
+            },
+            .binary_op => |v| {
+                std.debug.print("binary_op op={t}:\n", .{
+                    v.op,
+                });
+                self.print(v.lhs, depth + 1);
+                self.print(v.rhs, depth + 1);
+            },
+            .unary_op => |v| {
+                std.debug.print("unary_op op={t}:\n", .{
+                    v.op,
+                });
+                self.print(v.val, depth + 1);
+            },
+            .field_acc => |v| {
+                std.debug.print("field_acc name='{s}':\n", .{
+                    self.readSpan(v.ident),
+                });
+                self.print(v.val, depth + 1);
+            },
+            .index_acc => |v| {
+                std.debug.print("index_acc:\n", .{});
+                self.print(v.val, depth + 1);
+                self.print(v.expr, depth + 1);
+            },
+            .call => |v| {
+                std.debug.print("call:\n", .{});
+                self.print(v.val, depth + 1);
+                indent(depth + 1);
+                std.debug.print("args:\n", .{});
+                for (v.args.low..v.args.high) |i|
+                    self.print(@truncate(i), depth + 2);
+            },
+            .access => |v| {
+                std.debug.print("access: {s}\n", .{
+                    self.readSpan(v.ident),
+                });
+            },
+            .str_lit => |v| {
+                std.debug.print("str_lit: {s}\n", .{
+                    self.readSpan(v.tok),
+                });
+            },
+            .char_lit => |v| {
+                std.debug.print("char_lit raw={}: {s}\n", .{
+                    v.val,
+                    self.readSpan(v.tok),
+                });
+            },
+            .int_lit => |v| {
+                std.debug.print("int_lit: {d}\n", .{
+                    v.val,
+                });
+            },
+            .float_lit => |v| {
+                std.debug.print("float_lit: {d}\n", .{
+                    v.val,
+                });
+            },
+        }
     }
 
     fn allocNode(self: *@This(), node: Node) Error!NodeId {
+        // std.log.debug("alloc node={any}", .{node});
         const id = std.math.cast(u32, self.nodes.items.len) orelse
             return error.TooManyAstNodes;
         try self.nodes.append(self.alloc, node);
@@ -590,6 +729,7 @@ pub const Parser = struct {
     }
 
     fn allocNodes(self: *@This(), nodes: []const Node) Error!NodeRange {
+        // std.log.debug("alloc nodes={any}", .{nodes});
         const start = std.math.cast(u32, self.nodes.items.len) orelse
             return error.TooManyAstNodes;
         const end = std.math.cast(u32, self.nodes.items.len + nodes.len) orelse
@@ -658,12 +798,12 @@ pub const Parser = struct {
     }
 
     fn parseFile(self: *@This()) Error!Node {
-        std.log.debug("parse file", .{});
+        // std.log.debug("parse file", .{});
         return self.parseStructContents();
     }
 
     fn parseStructContents(self: *@This()) Error!Node {
-        std.log.debug("parse struct contents", .{});
+        // std.log.debug("parse struct contents", .{});
         var fields: std.ArrayList(Node) = .{};
         defer fields.deinit(self.alloc);
         var decls: std.ArrayList(Node) = .{};
@@ -686,7 +826,7 @@ pub const Parser = struct {
     }
 
     fn parseField(self: *@This()) Error!Node {
-        std.log.debug("parse field", .{});
+        // std.log.debug("parse field", .{});
         const ident = try self.parseToken(.ident);
         const colon = try self.parseToken(.colon);
         const ty = try self.parseType();
@@ -722,7 +862,7 @@ pub const Parser = struct {
     }
 
     fn parseDecl(self: *@This()) Error!Node {
-        std.log.debug("parse decl", .{});
+        // std.log.debug("parse decl", .{});
         const let = try self.parseToken(.let);
         var mut: ?Span = null;
         if (try self.peekNthToken(0) == .mut)
@@ -742,14 +882,13 @@ pub const Parser = struct {
         } };
     }
 
-    fn parseType(self: *@This()) Error!Node {
-        std.log.debug("parse type", .{});
-        _ = self;
-        return undefined;
+    fn parseType(_: *@This()) Error!Node {
+        // std.log.debug("parse type", .{});
+        std.debug.panic("todo", .{});
     }
 
     fn parseExpr(self: *@This()) Error!Node {
-        std.log.debug("parse expr", .{});
+        // std.log.debug("parse expr", .{});
         var lhs = try self.parseTerm();
 
         while (true) {
@@ -762,8 +901,9 @@ pub const Parser = struct {
             _ = self.advance();
             const rhs = try self.parseTerm();
 
+            const prev = try self.allocNode(lhs); // https://github.com/ziglang/zig/issues/24627
             lhs = .{ .binary_op = .{
-                .lhs = try self.allocNode(lhs),
+                .lhs = prev,
                 .op = op,
                 .rhs = try self.allocNode(rhs),
             } };
@@ -773,7 +913,7 @@ pub const Parser = struct {
     }
 
     fn parseTerm(self: *@This()) Error!Node {
-        std.log.debug("parse term", .{});
+        // std.log.debug("parse term", .{});
         var lhs = try self.parseFactor();
 
         while (true) {
@@ -785,8 +925,9 @@ pub const Parser = struct {
             _ = self.advance();
             const rhs = try self.parseFactor();
 
+            const prev = try self.allocNode(lhs); // https://github.com/ziglang/zig/issues/24627
             lhs = .{ .binary_op = .{
-                .lhs = try self.allocNode(lhs),
+                .lhs = prev,
                 .op = op,
                 .rhs = try self.allocNode(rhs),
             } };
@@ -796,15 +937,16 @@ pub const Parser = struct {
     }
 
     fn parseFactor(self: *@This()) Error!Node {
-        std.log.debug("parse factor", .{});
+        // std.log.debug("parse factor", .{});
         const op = switch (try self.peekNthToken(0)) {
             .plus => {
+                // 1 + 1 * -f();
                 _ = self.advance();
                 return try self.parseFactor();
             },
             .minus => UnaryOp.neg,
             .exclam => UnaryOp.not,
-            else => return try self.parseAtom(),
+            else => return try self.parseChain(),
         };
         const val = try self.parseFactor();
 
@@ -814,28 +956,98 @@ pub const Parser = struct {
         } };
     }
 
+    fn parseChain(self: *@This()) Error!Node {
+        // std.log.debug("parse chain", .{});
+        var lhs = try self.parseAtom();
+
+        while (true) {
+            switch (try self.peekNthToken(0)) {
+                .lparen => {
+                    // std.log.debug("parse call", .{});
+                    const args = try self.parseArgs();
+                    const prev = try self.allocNode(lhs); // https://github.com/ziglang/zig/issues/24627
+                    lhs = .{ .call = .{
+                        .val = prev,
+                        .args = args,
+                    } };
+                },
+                .dot => {
+                    // std.log.debug("parse field_acc", .{});
+                    self.advance();
+                    const ident = try self.parseToken(.ident);
+                    const prev = try self.allocNode(lhs); // https://github.com/ziglang/zig/issues/24627
+                    lhs = .{ .field_acc = .{
+                        .val = prev,
+                        .ident = ident,
+                    } };
+                },
+                .lbracket => {
+                    // std.log.debug("parse index_acc", .{});
+                    self.advance();
+                    const expr = try self.parseExpr();
+                    _ = try self.parseToken(.rbracket);
+                    const prev = try self.allocNode(lhs); // https://github.com/ziglang/zig/issues/24627
+                    lhs = .{ .index_acc = .{
+                        .val = prev,
+                        .expr = try self.allocNode(expr),
+                    } };
+                },
+                else => break,
+            }
+        }
+
+        return lhs;
+    }
+
+    fn parseArgs(self: *@This()) Error!NodeRange {
+        // std.log.debug("parse args", .{});
+        var args: std.ArrayListUnmanaged(Node) = .{};
+        defer args.deinit(self.alloc);
+
+        _ = try self.parseToken(.lparen);
+        while (true) {
+            switch (try self.peekNthToken(0)) {
+                .rparen => break,
+                else => {},
+            }
+
+            try args.append(self.alloc, try self.parseExpr());
+
+            switch (try self.peekNthToken(0)) {
+                .rparen => break,
+                .comma => self.advance(),
+                else => return error.InvalidSyntax,
+            }
+        }
+        _ = try self.parseToken(.rparen);
+
+        return try self.allocNodes(args.items);
+    }
+
     fn parseAtom(self: *@This()) Error!Node {
-        std.log.debug("parse atom", .{});
+        // std.log.debug("parse atom", .{});
         switch (try self.peekNthToken(0)) {
             .str_lit => return try self.parseLitStr(),
             .char_lit => return try self.parseLitChar(),
             .float_lit => return try self.parseLitFloat(),
             .int_lit => return try self.parseLitInt(),
+            .ident => return .{ .access = .{
+                .ident = try self.parseToken(.ident),
+            } },
             .lparen => {
                 _ = try self.parseToken(.lparen);
                 const expr = try self.parseExpr();
                 _ = try self.parseToken(.rparen);
                 return expr;
             },
-            // .lbrace => {
-            //     return try self.parseScope();
-            // },
-            else => return try self.parseAtom(),
+            .lbrace => return try self.parseScope(),
+            .@"fn" => return try self.parseFn(),
+            else => return error.InvalidSyntax,
         }
     }
 
     fn parseLitStr(self: *@This()) Error!Node {
-        std.log.debug("parse lit str", .{});
+        // std.log.debug("parse lit str", .{});
         const span = try self.parseToken(.str_lit);
         // .val = self.readSpan(span)[1..][0 .. span.len() - 2],
         return .{ .str_lit = .{
@@ -844,7 +1056,7 @@ pub const Parser = struct {
     }
 
     fn parseLitChar(self: *@This()) Error!Node {
-        std.log.debug("parse lit char", .{});
+        // std.log.debug("parse lit char", .{});
         const span = try self.parseToken(.char_lit);
         const str = self.readSpan(span);
         // TODO: escapes
@@ -856,7 +1068,7 @@ pub const Parser = struct {
     }
 
     fn parseLitFloat(self: *@This()) Error!Node {
-        std.log.debug("parse lit float", .{});
+        // std.log.debug("parse lit float", .{});
         const span = try self.parseToken(.float_lit);
 
         const base, const str = numberLiteralSplitBase(self.readSpan(span));
@@ -887,13 +1099,12 @@ pub const Parser = struct {
         }
 
         return .{ .float_lit = .{
-            .tok = span,
             .val = num,
         } };
     }
 
     fn parseLitInt(self: *@This()) Error!Node {
-        std.log.debug("parse lit int", .{});
+        // std.log.debug("parse lit int", .{});
         const span = try self.parseToken(.int_lit);
 
         const base, const str = numberLiteralSplitBase(self.readSpan(span));
@@ -912,7 +1123,6 @@ pub const Parser = struct {
         }
 
         return .{ .int_lit = .{
-            .tok = span,
             .val = num,
         } };
     }
@@ -936,5 +1146,105 @@ pub const Parser = struct {
             else => {},
         };
         return .{ base, split_str };
+    }
+
+    fn parseFn(self: *@This()) !Node {
+        // std.log.debug("parse fn", .{});
+        _ = try self.parseToken(.@"fn");
+        const params = try self.parseParams();
+        const scope = try self.parseScope();
+
+        return .{ .@"fn" = .{
+            .params = params,
+            .scope = try self.allocNode(scope),
+        } };
+    }
+
+    fn parseParams(self: *@This()) !NodeRange {
+        // std.log.debug("parse params", .{});
+        var params: std.ArrayListUnmanaged(Node) = .{};
+        defer params.deinit(self.alloc);
+
+        _ = try self.parseToken(.lparen);
+        while (true) {
+            switch (try self.peekNthToken(0)) {
+                .rparen => break,
+                .comma => {},
+                else => return error.InvalidSyntax,
+            }
+
+            switch (try self.peekNthToken(0)) {
+                .rparen => break,
+                .ident => {},
+                else => return error.InvalidSyntax,
+            }
+
+            const param = try self.parseParam();
+            try params.append(self.alloc, param);
+        }
+        _ = try self.parseToken(.rparen);
+
+        return self.allocNodes(params.items);
+    }
+
+    fn parseParam(self: *@This()) !Node {
+        // std.log.debug("parse param", .{});
+        const ident = try self.parseToken(.ident);
+        _ = try self.parseToken(.colon);
+        const ty = try self.parseType();
+
+        return .{ .param = .{
+            .ident = ident,
+            .type = try self.allocNode(ty),
+        } };
+    }
+
+    fn parseScope(self: *@This()) !Node {
+        // std.log.debug("parse scope", .{});
+        var stmts: std.ArrayListUnmanaged(Node) = .{};
+        defer stmts.deinit(self.alloc);
+
+        var has_trailing_semi = true;
+
+        _ = try self.parseToken(.lbrace);
+        while (true) {
+            switch (try self.peekNthToken(0)) {
+                .rbrace => {
+                    self.advance();
+                    break;
+                },
+                .semi => {
+                    self.advance();
+                    continue;
+                },
+                else => {},
+            }
+
+            const stmt = try self.parseStmt();
+            try stmts.append(self.alloc, stmt);
+
+            switch (try self.peekNthToken(0)) {
+                .rbrace => {
+                    has_trailing_semi = false;
+                    self.advance();
+                    break;
+                },
+                else => {},
+            }
+        }
+
+        return .{ .scope = .{
+            .stmts = try self.allocNodes(stmts.items),
+            .has_trailing_semi = has_trailing_semi,
+        } };
+    }
+
+    fn parseStmt(self: *@This()) !Node {
+        // std.log.debug("parse stmt", .{});
+        const next = try self.peekNthToken(0);
+        return switch (next) {
+            .let => try self.parseDecl(),
+            else => try self.parseExpr(),
+        };
     }
 };

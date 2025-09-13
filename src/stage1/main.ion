@@ -1,6 +1,10 @@
 // line comment
-let a = 0;
+
+// let std = import("std");
 // let main = fn() {
-// 	   let x = 0.0;
-//     puts("Hello, world!");
+//     std.puts("Hello, world!");
 // };
+
+let main = fn() {
+    puts("Hello, world!");
+};

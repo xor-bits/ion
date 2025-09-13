@@ -6,13 +6,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const stage0 = b.createModule(.{
+        .root_source_file = b.path("./src/stage0/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const stage0_compiler = b.addExecutable(.{
         .name = "ion-stage0",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("./src/stage0/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = stage0,
     });
 
     const install_stage0_compiler = b.addInstallArtifact(stage0_compiler, .{});

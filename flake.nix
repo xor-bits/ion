@@ -16,7 +16,12 @@
       {
         # `nix develop`
         devShells.default = pkgs.mkShell rec {
-          buildInputs = with pkgs; [ zig_0_15 zls_0_15 ];
+          buildInputs = with pkgs; [
+            pkg-config
+            zig_0_15
+            zls_0_15
+            llvmPackages_21.llvm
+          ];
           LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         };
       }
