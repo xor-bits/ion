@@ -21,6 +21,7 @@
             zig_0_15
             zls_0_15
             llvmPackages_21.llvm
+            llvmPackages_21.clang
           ];
           LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         };

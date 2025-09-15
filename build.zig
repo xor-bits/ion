@@ -10,7 +10,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("./src/stage0/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+    stage0.linkSystemLibrary("LLVM-21", .{});
 
     const stage0_compiler = b.addExecutable(.{
         .name = "ion-stage0",

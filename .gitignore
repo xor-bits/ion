@@ -3,3 +3,5 @@
 zig-out/
 build/
 .gdb_history
+out
+out.*

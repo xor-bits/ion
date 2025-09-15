@@ -1,6 +1,19 @@
 const std = @import("std");
 
+const llvm = @cImport({
+    @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/Analysis.h");
+});
+
 pub fn main() !u8 {
+    _ = llvm.LLVMCreateBuilder();
+    const mod = llvm.LLVMModuleCreateWithName("ion");
+    const main_fn_ty = llvm.LLVMFunctionType(llvm.LLVMInt32Type(), null, 0, 0);
+    _ = llvm.LLVMAddFunction(mod, "main", main_fn_ty);
+    var err: [*c]u8 = null;
+    _ = llvm.LLVMVerifyModule(mod, llvm.LLVMAbortProcessAction, &err);
+    llvm.LLVMDumpModule(mod);
+
     var gpf = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpf.deinit();
     const alloc = gpf.allocator();
@@ -21,9 +34,9 @@ pub fn main() !u8 {
     const source_file = try std.fs.cwd().openFile(source_path, .{});
     defer source_file.close();
 
-    var buffer: [0x8000]u8 = undefined;
+    var read_buffer: [0x8000]u8 = undefined;
 
-    var source_reader = source_file.reader(&buffer);
+    var source_reader = source_file.reader(&read_buffer);
     const source_size = try source_reader.getSize();
     const source = try alloc.alloc(u8, source_size);
     defer alloc.free(source);
@@ -36,6 +49,18 @@ pub fn main() !u8 {
     var parser: Parser = .init(alloc, tokenizer.tokens.items, tokenizer.spans.items, source);
     defer parser.deinit();
     try parser.run();
+
+    var codegen: Codegen = .init(alloc, parser.nodes.items, source);
+    defer codegen.deinit();
+    try codegen.run();
+
+    const ir_file = try std.fs.cwd().createFile("out.ll", .{});
+    defer ir_file.close();
+
+    var write_buffer: [0x8000]u8 = undefined;
+    var ir_writer = ir_file.writer(&write_buffer);
+    try codegen.dump(&ir_writer.interface);
+    try ir_writer.interface.flush();
 
     return 0;
 }
@@ -1246,5 +1271,50 @@ pub const Parser = struct {
             .let => try self.parseDecl(),
             else => try self.parseExpr(),
         };
+    }
+};
+
+pub const Codegen = struct {
+    alloc: std.mem.Allocator,
+    globals: std.ArrayList(u8) = .{},
+
+    ast: []const Node,
+    source: []const u8,
+
+    pub fn init(
+        alloc: std.mem.Allocator,
+        ast: []const Node,
+        source: []const u8,
+    ) @This() {
+        return .{
+            .alloc = alloc,
+            .ast = ast,
+            .source = source,
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.globals.deinit(self.alloc);
+    }
+
+    pub fn run(self: *@This()) !void {
+        _ = self;
+    }
+
+    pub fn dump(
+        self: *@This(),
+        ir_writer: *std.io.Writer,
+    ) !void {
+        _ = self;
+        _ = try ir_writer.write(
+            \\declare i32 @puts(i8*) nounwind
+            \\@.hello = private unnamed_addr constant [14 x i8] c"Hello, world!\00"
+            \\define i32 @main(i32 %argc, i8** %argv) nounwind {
+            \\    %1 = getelementptr [14 x i8], [14 x i8]* @.hello, i32 0, i32 0
+            \\    call i32 @puts(i8* %1)
+            \\    ret i32 0
+            \\}
+            \\
+        );
     }
 };
