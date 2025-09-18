@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    stage0.linkSystemLibrary("LLVM-21", .{});
+    // stage0.linkSystemLibrary("LLVM-21", .{});
 
     const stage0_compiler = b.addExecutable(.{
         .name = "ion-stage0",

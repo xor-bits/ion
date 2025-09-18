@@ -5,6 +5,16 @@
 //     std.puts("Hello, world!");
 // };
 
+let print = fn(s: []const u8) {
+    let printf = extern printf(s: *const u8, ..);
+    printf("%.*s\0", s.len, s.ptr);
+};
+
 let main = fn() {
+    asm {
+        "mov 60 rax"
+        "syscall"
+    }
+
     puts("Hello, world!");
 };
