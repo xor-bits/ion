@@ -1,20 +1,17 @@
-// line comment
-
 // let std = import("std");
-// let main = fn() {
-//     std.puts("Hello, world!");
-// };
+let printf = extern fn(s: *u8, ..): c_int @ "printf";
 
-let print = fn(s: []const u8) {
-    let printf = extern printf(s: *const u8, ..);
+let print = fn(s: []u8) {
+    // /* 1 */ let printf: extern fn(s: *u8, ..): c_int = extern "printf";
+    // /* 2 */ let extern printf = fn(s: *u8, ..): c_int;
+    // /* 3 */ let printf = extern printf(s: *u8, ..): c_int;
+    // /* 4 */ let printf = extern printf fn(s: *u8, ..): c_int;
+    // /* 5 */ let printf = extern fn(s: *u8, ..): c_int "printf";
+    // /* 5 */ let printf = extern fn(s: *u8, ..): c_int @ "printf";
+    // /* 5 */ let print = fn(s: []u8) { /* */ };
     printf("%.*s\0", s.len, s.ptr);
 };
 
 let main = fn() {
-    asm {
-        "mov 60 rax"
-        "syscall"
-    }
-
-    puts("Hello, world!");
+    print("Hello, world!");
 };
