@@ -48,29 +48,14 @@ pub fn main() !u8 {
     defer ir_gen.deinit(alloc);
     try ir_gen.run(alloc);
 
-    // var parser: Parser = .init(alloc, tokenizer.tokens.items, tokenizer.spans.items, source);
-    // defer parser.deinit();
-    // try parser.run();
+    ir_gen.dump();
 
-    // var analyzer: SemanticAnalyzer = .init(alloc, parser.nodes.items, source);
-    // defer analyzer.deinit();
-    // try analyzer.run();
-
-    // // var ir_gen: IrGenerator = .init(alloc, parser.nodes.items, source);
-    // // defer ir_gen.deinit();
-    // // try ir_gen.run();
-
-    // var codegen: Codegen = .init(alloc, parser.nodes.items, source);
-    // defer codegen.deinit();
-    // try codegen.run();
-
-    // const ir_file = try std.fs.cwd().createFile("out.ll", .{});
-    // defer ir_file.close();
-
-    // var write_buffer: [0x8000]u8 = undefined;
-    // var ir_writer = ir_file.writer(&write_buffer);
-    // try codegen.dump(&ir_writer.interface);
-    // try ir_writer.interface.flush();
+    // var codegen: Codegen = .{
+    //     .ast = parser.nodes.items,
+    //     .source = source,
+    // };
+    // defer codegen.deinit(alloc);
+    // try codegen.run(alloc);
 
     return 0;
 }
@@ -104,6 +89,19 @@ pub fn Range(
             src: anytype,
         ) @TypeOf(src) {
             return src[self.start..self.end];
+        }
+
+        pub fn splitLast(
+            self: @This(),
+        ) ?struct { @This(), T } {
+            if (self.len() == 0) return null;
+            return .{
+                .{
+                    .start = self.start,
+                    .end = self.end - 1,
+                },
+                self.end - 1,
+            };
         }
     };
 }

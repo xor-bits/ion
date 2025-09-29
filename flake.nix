@@ -23,6 +23,10 @@
             llvmPackages_21.llvm
             llvmPackages_21.clang
           ];
+          shellHook = ''
+            unset NIX_CFLAGS_COMPILE
+            # unset NIX_LDFLAGS
+          '';
           LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
         };
       }
