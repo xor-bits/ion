@@ -33,10 +33,57 @@
 //     %3 = call_finish_builtin .add
 //     return %3
 
+
+// let add = fn(a: u32, b: u32): u32 {
+//     a + b
+// };
+
+// let T = fn(): type {
+//     if ?? {
+//         u32
+//     } else {
+//         u64
+//     }
+// };
+
+let global = 10;
+let nothing = fn() {};
 let main = fn() {
     let a = 5;
     let b = 6;
-    let c = a + b;
+    let c = a + b + global;
+    nothing();
     // print("Hello, world!");
 };
-    
+
+// \/
+
+// let global = tmp();
+// fn _tmp() { 10 }
+// fn nothing() {}
+// fn main() {
+//     let a = 5;
+//     let b = 6;
+//     let c = a + b + global;
+//     nothing();
+// }
+
+// \/
+
+// g1 = 10;
+// g2 = _nothing;
+// g3 = _main;
+// 
+// function _nothing:
+//     entry:
+//         return
+// function _main:
+//     entry:
+//         l1 = 5
+//         l2 = 6
+//         l3 = l1 + l2
+//         l4 = l3 + g1
+//         g2()
+//         return
+// }
+

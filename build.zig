@@ -18,6 +18,9 @@ pub fn build(b: *std.Build) void {
         .name = "ion-stage0",
         .root_module = stage0,
     });
+    std.log.info("{s}", .{
+        stage0_compiler.getEmittedLlvmIr().getDisplayName(),
+    });
 
     const install_stage0_compiler = b.addInstallArtifact(stage0_compiler, .{});
     b.default_step.dependOn(&install_stage0_compiler.step);

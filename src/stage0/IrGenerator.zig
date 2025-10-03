@@ -4,6 +4,7 @@ const Tokenizer = @import("Tokenizer.zig");
 const Span = Tokenizer.Span;
 const Node = Parser.Node;
 const NodeId = Parser.NodeId;
+const Range = @import("main.zig").Range;
 
 pub const NameHint = struct {
     prev: ?*const NameHint = null,
@@ -34,7 +35,37 @@ pub const NameHint = struct {
 };
 
 pub const InstrId = struct { u32 };
-pub const RegId = struct { u32 };
+pub const InstrRange = Range(InstrId, .{0});
+pub const RegId = packed struct {
+    idx: u30 = 1,
+    kind: enum(u2) {
+        local,
+        global,
+        func,
+    } = .local,
+
+    pub fn next(
+        counter: *@This(),
+    ) @This() {
+        defer counter.idx += 1;
+        return counter.*;
+    }
+
+    pub fn format(
+        self: *const @This(),
+        writer: *std.io.Writer,
+    ) std.io.Writer.Error!void {
+        const prefix = switch (self.kind) {
+            .local => "%",
+            .global => "g",
+            .func => "f",
+        };
+        try writer.print("{s}{}", .{
+            prefix,
+            self.idx,
+        });
+    }
+};
 
 pub const Instr = union(enum) {
     /// create and initialize a variable
@@ -55,23 +86,29 @@ pub const Instr = union(enum) {
     },
     /// reads the address of a field `a.b`
     get_field: struct {
+        result: RegId,
         container: RegId,
         field_idx: u32,
     },
     @"return": struct {
-        val: RegId,
+        value: RegId,
     },
 
     str_lit: struct {
-        val: Span,
+        result: RegId,
+        value: Span,
     },
     int_lit: struct {
-        val: u128,
+        result: RegId,
+        value: u128,
     },
     float_lit: struct {
-        val: f64,
+        result: RegId,
+        value: f64,
     },
-    void_lit: void,
+    void_lit: struct {
+        result: RegId,
+    },
 
     // /// always followed by another `.struct_field` or `.struct_finish`
     // struct_field: struct {
@@ -93,14 +130,20 @@ pub const Instr = union(enum) {
     },
     /// calls a function `a()` with arguments given by earlier `.call_arg`s
     call_finish: struct {
+        result: RegId,
         /// function to be called
         func: RegId,
     },
     /// calls a function `a()` with arguments given by earlier `.call_arg`s
     call_finish_builtin: struct {
+        result: RegId,
         /// function to be called
         func: BuiltinFunc,
     },
+
+    pub fn allocatesRegister(self: @This()) bool {
+        switch (self) {}
+    }
 };
 
 pub const BuiltinFunc = enum {
@@ -117,20 +160,16 @@ pub const BuiltinFunc = enum {
 pub const Static = struct {};
 
 pub const Prototype = struct {
-    // param_names: []const []const u8,
-    // param_types: []u32,
-    // return_type: u32,
-
     /// meta block is used to evaluate parameter and return types
-    meta_block: InstrId,
+    meta_block: InstrRange,
 };
 
 pub const Function = struct {
     symbol: []const u8,
     /// meta block is used to evaluate parameter and return types
-    meta_block: InstrId,
+    meta_block: InstrRange,
     /// main block is the actual code, before monomorphizing
-    main_block: InstrId,
+    main_block: InstrRange,
 };
 
 pub const Namespace = struct {};
@@ -145,7 +184,8 @@ instr: std.MultiArrayList(Instr) = .{},
 functions: std.MultiArrayList(Function) = .{},
 // prototypes: std.MultiArrayList(Prototype) = .{},
 // namespaces: std.MultiArrayList(Namespace) = .{},
-next_reg_id: RegId = .{1},
+global: RegId = .{ .kind = .global },
+local: RegId = .{ .kind = .local },
 symbols: Symbols = .{},
 builder: Builder = .{},
 
@@ -171,11 +211,19 @@ fn nodes(
     return self.parser.nodes.items;
 }
 
-fn nextReg(
+fn pushFunction(
     self: *@This(),
 ) RegId {
-    defer self.next_reg_id.@"0" += 1;
-    return self.next_reg_id;
+    defer self.local.idx = 1;
+    return self.local;
+}
+
+fn popFunction(
+    self: *@This(),
+    function_ptr: RegId,
+) void {
+    self.local = function_ptr;
+    self.local.idx += 1;
 }
 
 pub fn run(
@@ -184,6 +232,9 @@ pub fn run(
 ) Error!void {
     // measure the avg ir instruction count
     try self.instr.ensureTotalCapacity(alloc, 16);
+
+    try self.symbols.push(alloc);
+    defer self.symbols.pop(alloc);
 
     try self.convertStructContents(
         alloc,
@@ -196,26 +247,103 @@ pub fn dump(
     self: *@This(),
 ) void {
     std.debug.print("IRGEN DUMP:\n", .{});
-    std.debug.print("FUNCTIONS:\n", .{});
-    for (0..self.functions.len) |i| {
-        const function = self.functions.get(i);
+    for (0..self.functions.len) |func_i| {
+        const function = self.functions.get(func_i);
         std.debug.print(
             \\function {s}:
             \\  setup:
-            \\    {}
-            \\  entry:
-            \\    {}
             \\
         , .{
             function.symbol,
-            function.meta_block.@"0",
-            function.main_block.@"0",
         });
+        for (function.meta_block.start.@"0"..function.meta_block.end.@"0") |instr_i| {
+            self.dumpInstr(self.instr.get(instr_i));
+        }
+        std.debug.print(
+            \\  entry:
+            \\
+        , .{});
+        for (function.main_block.start.@"0"..function.main_block.end.@"0") |instr_i| {
+            self.dumpInstr(self.instr.get(instr_i));
+        }
+        std.debug.print(
+            \\
+        , .{});
     }
-    std.debug.print("INSTR:\n", .{});
-    for (0..self.instr.len) |i| {
-        const instr = self.instr.get(i);
-        std.debug.print("{any}\n", .{instr});
+}
+
+fn dumpInstr(
+    self: *@This(),
+    instr: Instr,
+) void {
+    switch (instr) {
+        .let => |v| {
+            _ = v;
+            @panic("todo");
+        },
+        .let_param => |v| {
+            _ = v;
+            @panic("todo");
+        },
+        .let_result => |v| {
+            std.debug.print("    @returns({f})\n", .{
+                v.value,
+            });
+        },
+        .get_field => |v| {
+            std.debug.print("    {f} = @get_field({f}, {})\n", .{
+                v.result,
+                v.container,
+                v.field_idx,
+            });
+        },
+        .@"return" => |v| {
+            std.debug.print("    @return({f})\n", .{
+                v.value,
+            });
+        },
+
+        .str_lit => |v| {
+            std.debug.print("    {f} = {s}\n", .{
+                v.result,
+                v.value.read(self.parser.tokenizer.source),
+            });
+        },
+        .int_lit => |v| {
+            std.debug.print("    {f} = {}\n", .{
+                v.result,
+                v.value,
+            });
+        },
+        .float_lit => |v| {
+            std.debug.print("    {f} = {}\n", .{
+                v.result,
+                v.value,
+            });
+        },
+        .void_lit => |v| {
+            std.debug.print("    {f} = {{}}\n", .{
+                v.result,
+            });
+        },
+
+        .call_arg => |v| {
+            std.debug.print("    @call_arg({f})\n", .{
+                v.value,
+            });
+        },
+        .call_finish => |v| {
+            std.debug.print("    {f} = @call_finish({f})\n", .{
+                v.result,
+                v.func,
+            });
+        },
+        .call_finish_builtin => |v| {
+            std.debug.print("    {f} = @call_finish_builtin({s})\n", .{
+                v.result,
+                @tagName(v.func),
+            });
+        },
     }
 }
 
@@ -275,13 +403,19 @@ pub fn convertFn(
     try self.symbols.push(alloc);
     defer self.symbols.pop(alloc);
 
+    const fn_ptr_val = self.pushFunction();
+    defer self.popFunction(fn_ptr_val);
+
     const prototype = try self.convertProtoBare(alloc, name_hint, func.proto);
     const function = try self.convertFnBare(alloc, name_hint, node_id, prototype);
 
+    const func_idx = self.functions.len;
     try self.functions.append(alloc, function);
-    // _ = function;
 
-    return self.nextReg();
+    return RegId{
+        .idx = @intCast(func_idx),
+        .kind = .func,
+    };
 }
 
 fn convertFnBare(
@@ -299,7 +433,7 @@ fn convertFnBare(
     const scope = try self.convertScope(alloc, name_hint, func.scope_or_symexpr);
 
     try self.builder.pushOne(alloc, .{ .@"return" = .{
-        .val = scope,
+        .value = scope,
     } });
 
     const main_block = try self.builder.popBlock(alloc, &self.instr);
@@ -320,6 +454,9 @@ pub fn convertProto(
 
     try self.symbols.push(alloc);
     defer self.symbols.pop(alloc);
+
+    const fn_ptr_val = self.pushFunction();
+    defer self.popFunction(fn_ptr_val);
 
     return try self.convertProtoBare(alloc, name_hint, proto);
 }
@@ -343,12 +480,18 @@ fn convertProtoBare(
         try self.symbols.set(alloc, param_name, param_type);
     }
 
-    if (proto.return_ty_expr) |i| {
-        const return_ty = try self.convertExpr(alloc, name_hint, i);
-        try self.builder.pushOne(alloc, .{ .let_result = .{
-            .value = return_ty,
+    const return_ty = if (proto.return_ty_expr) |i| b: {
+        break :b try self.convertExpr(alloc, name_hint, i);
+    } else b: {
+        const result = self.local.next();
+        try self.builder.pushOne(alloc, .{ .void_lit = .{
+            .result = result,
         } });
-    }
+        break :b result;
+    };
+    try self.builder.pushOne(alloc, .{ .let_result = .{
+        .value = return_ty,
+    } });
 
     const meta_block = try self.builder.popBlock(alloc, &self.instr);
     return .{
@@ -371,6 +514,7 @@ pub fn convertExpr(
             const rhs = try self.convertExpr(alloc, name_hint, v.rhs);
 
             try self.builder.pushPrepare(alloc, 3);
+            const result = self.local.next();
             self.builder.push(.{ .call_arg = .{
                 .value = lhs,
             } });
@@ -378,27 +522,30 @@ pub fn convertExpr(
                 .value = rhs,
             } });
             self.builder.push(.{ .call_finish_builtin = .{
+                .result = result,
                 .func = switch (v.op) {
                     inline else => |op| @field(BuiltinFunc, @tagName(op)),
                 },
             } });
 
-            return self.nextReg();
+            return result;
         },
         .unary_op => |v| {
             const val = try self.convertExpr(alloc, name_hint, v.val);
 
             try self.builder.pushPrepare(alloc, 2);
+            const result = self.local.next();
             self.builder.push(.{ .call_arg = .{
                 .value = val,
             } });
             self.builder.push(.{ .call_finish_builtin = .{
+                .result = result,
                 .func = switch (v.op) {
                     inline else => |op| @field(BuiltinFunc, @tagName(op)),
                 },
             } });
 
-            return self.nextReg();
+            return result;
         },
         .call => |v| {
             const func = try self.convertExpr(alloc, name_hint, v.val);
@@ -410,6 +557,7 @@ pub fn convertExpr(
                 arg.* = try self.convertExpr(alloc, name_hint, @intCast(i));
             }
 
+            const result = self.local.next();
             try self.builder.pushPrepare(alloc, @intCast(v.args.len() + 1));
             for (arg_regs) |arg| {
                 self.builder.push(.{ .call_arg = .{
@@ -417,10 +565,11 @@ pub fn convertExpr(
                 } });
             }
             self.builder.push(.{ .call_finish = .{
+                .result = result,
                 .func = func,
             } });
 
-            return self.nextReg();
+            return result;
         },
         .field_acc => {
             // const container = try self.convertExpr(alloc, name_hint, v.val);
@@ -436,32 +585,40 @@ pub fn convertExpr(
             @panic("todo");
         },
         .str_lit => |v| {
-            var val = v.tok;
-            val.start += 1;
-            val.end -= 1;
+            var value = v.tok;
+            value.start += 1;
+            value.end -= 1;
 
+            const result = self.local.next();
             try self.builder.pushOne(alloc, .{ .str_lit = .{
-                .val = val,
+                .result = result,
+                .value = value,
             } });
-            return self.nextReg();
+            return result;
         },
         .char_lit => |v| {
+            const result = self.local.next();
             try self.builder.pushOne(alloc, .{ .int_lit = .{
-                .val = v.val,
+                .result = result,
+                .value = v.val,
             } });
-            return self.nextReg();
+            return result;
         },
         .float_lit => |v| {
+            const result = self.local.next();
             try self.builder.pushOne(alloc, .{ .float_lit = .{
-                .val = v.val,
+                .result = result,
+                .value = v.val,
             } });
-            return self.nextReg();
+            return result;
         },
         .int_lit => |v| {
+            const result = self.local.next();
             try self.builder.pushOne(alloc, .{ .int_lit = .{
-                .val = v.val,
+                .result = result,
+                .value = v.val,
             } });
-            return self.nextReg();
+            return result;
         },
         .access => |v| {
             const sym = v.ident.read(self.parser.tokenizer.source);
@@ -491,8 +648,11 @@ pub fn convertScope(
     const scope = self.nodes()[node_id].scope;
 
     const stmts, const result_expr = scope.stmts.splitLast() orelse {
-        try self.builder.pushOne(alloc, .void_lit);
-        return self.nextReg();
+        const result = self.local.next();
+        try self.builder.pushOne(alloc, .{ .void_lit = .{
+            .result = result,
+        } });
+        return result;
     };
 
     for (stmts.start..stmts.end) |i| {
@@ -504,8 +664,11 @@ pub fn convertScope(
     } else {
         try self.convertStmt(alloc, name_hint, result_expr);
 
-        try self.builder.pushOne(alloc, .void_lit);
-        return self.nextReg();
+        const result = self.local.next();
+        try self.builder.pushOne(alloc, .{ .void_lit = .{
+            .result = result,
+        } });
+        return result;
     }
 }
 
@@ -537,25 +700,13 @@ pub const Symbols = struct {
         self.scopes.deinit(alloc);
     }
 
-    fn lazyinit(
-        self: *@This(),
-        alloc: std.mem.Allocator,
-    ) Error!void {
-        if (self.scopes.items.len == 0) {
-            @branchHint(.cold);
-
-            // global scope, always there
-            try self.scopes.append(alloc, .{});
-        }
-    }
-
     pub fn set(
         self: *@This(),
         alloc: std.mem.Allocator,
         var_name: []const u8,
         val: RegId,
     ) Error!void {
-        try self.lazyinit(alloc);
+        std.debug.assert(self.scopes.items.len != 0);
 
         const scope = &self.scopes.items[self.scopes.items.len - 1];
         try scope.put(alloc, var_name, val);
@@ -565,7 +716,7 @@ pub const Symbols = struct {
         self: *@This(),
         var_name: []const u8,
     ) ?RegId {
-        if (self.scopes.items.len == 0) return null;
+        std.debug.assert(self.scopes.items.len != 0);
 
         var it = std.mem.reverseIterator(self.scopes.items);
         while (it.next()) |scope| {
@@ -580,7 +731,6 @@ pub const Symbols = struct {
         self: *@This(),
         alloc: std.mem.Allocator,
     ) Error!void {
-        try self.lazyinit(alloc);
         try self.scopes.append(alloc, .{});
     }
 
@@ -588,7 +738,7 @@ pub const Symbols = struct {
         self: *@This(),
         alloc: std.mem.Allocator,
     ) void {
-        var scope = self.scopes.pop() orelse return;
+        var scope = self.scopes.pop().?;
         scope.deinit(alloc);
     }
 };
@@ -662,10 +812,13 @@ pub const Builder = struct {
         self: *@This(),
         alloc: std.mem.Allocator,
         output: *std.MultiArrayList(Instr),
-    ) Error!InstrId {
+    ) Error!InstrRange {
         const top_scope = self.topScope();
 
-        const instr_id: InstrId = .{@intCast(output.len)};
+        const instr: InstrRange = .{
+            .start = .{@intCast(output.len)},
+            .end = .{@intCast(output.len + top_scope.len)},
+        };
         try output.ensureUnusedCapacity(alloc, top_scope.len);
         for (0..top_scope.len) |i| {
             output.appendAssumeCapacity(top_scope.get(i));
@@ -674,7 +827,7 @@ pub const Builder = struct {
         top_scope.clearRetainingCapacity();
         self.top -= 1;
 
-        return instr_id;
+        return instr;
     }
 
     pub fn popBlockDiscard(
