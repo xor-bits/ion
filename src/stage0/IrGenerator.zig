@@ -10,6 +10,16 @@ pub const NameHint = struct {
     prev: ?*const NameHint = null,
     part: []const u8 = "??",
 
+    pub fn push(
+        self: *const @This(),
+        part: []const u8,
+    ) @This() {
+        return .{
+            .prev = self,
+            .part = part,
+        };
+    }
+
     pub fn generate(
         self: *const @This(),
         alloc: std.mem.Allocator,
@@ -37,7 +47,7 @@ pub const NameHint = struct {
 pub const InstrId = struct { u32 };
 pub const InstrRange = Range(InstrId, .{0});
 pub const RegId = packed struct {
-    idx: u30 = 1,
+    idx: u30 = 0,
     kind: enum(u2) {
         local,
         global,
@@ -80,18 +90,11 @@ pub const Instr = union(enum) {
         mut: bool,
         value: RegId,
     },
-    /// create and initialize a meta variable: result
-    let_result: struct {
-        value: RegId,
-    },
     /// reads the address of a field `a.b`
     get_field: struct {
         result: RegId,
         container: RegId,
         field_idx: u32,
-    },
-    @"return": struct {
-        value: RegId,
     },
 
     str_lit: struct {
@@ -157,22 +160,34 @@ pub const BuiltinFunc = enum {
     not,
 };
 
+pub const Block = struct {
+    instructions: InstrRange,
+    branch: union(enum) {
+        @"return": RegId,
+    },
+};
+
 pub const Static = struct {};
 
 pub const Prototype = struct {
     /// meta block is used to evaluate parameter and return types
-    meta_block: InstrRange,
+    meta: Block,
 };
 
 pub const Function = struct {
     symbol: []const u8,
     /// meta block is used to evaluate parameter and return types
-    meta_block: InstrRange,
+    meta: Block,
     /// main block is the actual code, before monomorphizing
-    main_block: InstrRange,
+    main: Block,
 };
 
 pub const Namespace = struct {};
+
+pub const Global = struct {
+    symbol: []const u8,
+    block: Block,
+};
 
 pub const Error = error{
     OutOfMemory,
@@ -184,6 +199,7 @@ instr: std.MultiArrayList(Instr) = .{},
 functions: std.MultiArrayList(Function) = .{},
 // prototypes: std.MultiArrayList(Prototype) = .{},
 // namespaces: std.MultiArrayList(Namespace) = .{},
+globals: std.ArrayList(Global) = .{},
 global: RegId = .{ .kind = .global },
 local: RegId = .{ .kind = .local },
 symbols: Symbols = .{},
@@ -198,6 +214,10 @@ pub fn deinit(
 ) void {
     self.builder.deinit(alloc);
     self.symbols.deinit(alloc);
+    for (self.globals.items) |global| {
+        alloc.free(global.symbol);
+    }
+    self.globals.deinit(alloc);
     for (0..self.functions.len) |i| {
         alloc.free(self.functions.get(i).symbol);
     }
@@ -211,10 +231,16 @@ fn nodes(
     return self.parser.nodes.items;
 }
 
+fn source(
+    self: *@This(),
+) []const u8 {
+    return self.parser.tokenizer.source;
+}
+
 fn pushFunction(
     self: *@This(),
 ) RegId {
-    defer self.local.idx = 1;
+    defer self.local = .{ .kind = .local };
     return self.local;
 }
 
@@ -247,29 +273,49 @@ pub fn dump(
     self: *@This(),
 ) void {
     std.debug.print("IRGEN DUMP:\n", .{});
-    for (0..self.functions.len) |func_i| {
-        const function = self.functions.get(func_i);
+    for (self.globals.items, 0..) |global, idx| {
         std.debug.print(
-            \\function {s}:
+            \\{f} = global {s}:
             \\  setup:
             \\
         , .{
+            RegId{ .idx = @intCast(idx), .kind = .global },
+            global.symbol,
+        });
+        self.dumpBlock(global.block);
+    }
+    for (0..self.functions.len) |idx| {
+        const function = self.functions.get(idx);
+        std.debug.print(
+            \\{f} = function {s}:
+            \\  setup:
+            \\
+        , .{
+            RegId{ .idx = @intCast(idx), .kind = .func },
             function.symbol,
         });
-        for (function.meta_block.start.@"0"..function.meta_block.end.@"0") |instr_i| {
-            self.dumpInstr(self.instr.get(instr_i));
-        }
+        self.dumpBlock(function.meta);
         std.debug.print(
             \\  entry:
             \\
         , .{});
-        for (function.main_block.start.@"0"..function.main_block.end.@"0") |instr_i| {
-            self.dumpInstr(self.instr.get(instr_i));
-        }
+        self.dumpBlock(function.main);
         std.debug.print(
             \\
         , .{});
     }
+}
+
+fn dumpBlock(
+    self: *@This(),
+    block: Block,
+) void {
+    for (block.instructions.start.@"0"..block.instructions.end.@"0") |instr_i| {
+        self.dumpInstr(self.instr.get(instr_i));
+    }
+    std.debug.print("    @return({f})\n", .{
+        block.branch.@"return",
+    });
 }
 
 fn dumpInstr(
@@ -285,21 +331,11 @@ fn dumpInstr(
             _ = v;
             @panic("todo");
         },
-        .let_result => |v| {
-            std.debug.print("    @returns({f})\n", .{
-                v.value,
-            });
-        },
         .get_field => |v| {
             std.debug.print("    {f} = @get_field({f}, {})\n", .{
                 v.result,
                 v.container,
                 v.field_idx,
-            });
-        },
-        .@"return" => |v| {
-            std.debug.print("    @return({f})\n", .{
-                v.value,
             });
         },
 
@@ -354,17 +390,62 @@ pub fn convertStructContents(
     struct_contents: @FieldType(Node, "struct_contents"),
 ) Error!void {
     for (struct_contents.decls.start..struct_contents.decls.end) |i| {
-        try self.convertDecl(alloc, name_hint, @intCast(i));
+        try self.convertGlobalDecl(
+            alloc,
+            name_hint,
+            @intCast(i),
+        );
     }
 }
 
-pub fn convertDecl(
+pub fn convertGlobalDecl(
     self: *@This(),
     alloc: std.mem.Allocator,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
     const decl = self.nodes()[node_id].decl;
+    const next_name_hint = name_hint.push(decl.ident.read(self.source()));
+
+    if (decl.type_hint) |type_hint| {
+        _ = type_hint;
+        @panic("todo");
+        // const type_hint = try self.convertExpr(alloc, &.{
+        //     .prev = name_hint,
+        //     .part = decl.ident.read(self.parser.tokenizer.source),
+        // }, type_hint);
+    }
+
+    try self.builder.pushBlock(alloc);
+
+    const name = decl.ident.read(self.parser.tokenizer.source);
+    const local_val = try self.convertExpr(
+        alloc,
+        &next_name_hint,
+        decl.expr,
+    );
+
+    const block = try self.builder.popBlock(alloc, &self.instr);
+    const global_val: RegId = .{ .idx = @intCast(self.globals.items.len), .kind = .global };
+    try self.globals.append(alloc, .{
+        .symbol = try next_name_hint.generate(alloc),
+        .block = .{
+            .instructions = block,
+            .branch = .{ .@"return" = local_val },
+        },
+    });
+
+    try self.symbols.set(alloc, name, global_val);
+}
+
+pub fn convertLocalDecl(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const decl = self.nodes()[node_id].decl;
+    const next_name_hint = name_hint.push(decl.ident.read(self.source()));
 
     if (decl.type_hint) |type_hint| {
         _ = type_hint;
@@ -376,18 +457,13 @@ pub fn convertDecl(
     }
 
     const name = decl.ident.read(self.parser.tokenizer.source);
-    const val = try self.convertExpr(alloc, &.{
-        .prev = name_hint,
-        .part = decl.ident.read(self.parser.tokenizer.source),
-    }, decl.expr);
+    const val = try self.convertExpr(
+        alloc,
+        &next_name_hint,
+        decl.expr,
+    );
 
     try self.symbols.set(alloc, name, val);
-
-    // try self.instr.append(alloc, .{ .let = .{
-    //     .ident = decl.ident,
-    //     .mut = decl.mut,
-    //     .value = val,
-    // } });
 }
 
 pub fn convertFn(
@@ -428,19 +504,18 @@ fn convertFnBare(
     const func = self.nodes()[node_id].@"fn";
 
     try self.builder.pushBlock(alloc);
-    errdefer self.builder.popBlockDiscard();
 
     const scope = try self.convertScope(alloc, name_hint, func.scope_or_symexpr);
 
-    try self.builder.pushOne(alloc, .{ .@"return" = .{
-        .value = scope,
-    } });
-
+    // TODO: scope should build the block
     const main_block = try self.builder.popBlock(alloc, &self.instr);
     return .{
         .symbol = try name_hint.generate(alloc),
-        .meta_block = prototype.meta_block,
-        .main_block = main_block,
+        .meta = prototype.meta,
+        .main = .{
+            .instructions = main_block,
+            .branch = .{ .@"return" = scope },
+        },
     };
 }
 
@@ -470,7 +545,6 @@ fn convertProtoBare(
     const proto = self.nodes()[node_id].proto;
 
     try self.builder.pushBlock(alloc);
-    errdefer self.builder.popBlockDiscard();
 
     for (proto.params.start..proto.params.end) |i| {
         const param = self.nodes()[i].param;
@@ -489,13 +563,13 @@ fn convertProtoBare(
         } });
         break :b result;
     };
-    try self.builder.pushOne(alloc, .{ .let_result = .{
-        .value = return_ty,
-    } });
 
     const meta_block = try self.builder.popBlock(alloc, &self.instr);
     return .{
-        .meta_block = meta_block,
+        .meta = .{
+            .instructions = meta_block,
+            .branch = .{ .@"return" = return_ty },
+        },
     };
 }
 
@@ -627,11 +701,16 @@ pub fn convertExpr(
                 return error.UnknownSymbol;
             };
         },
-        .scope => return try self.convertScope(alloc, &.{
-            .prev = name_hint,
-            .part = "<scope>",
-        }, node_id),
-        .@"fn" => return try self.convertFn(alloc, name_hint, node_id),
+        .scope => return try self.convertScope(
+            alloc,
+            &name_hint.push("<scope>"),
+            node_id,
+        ),
+        .@"fn" => return try self.convertFn(
+            alloc,
+            name_hint,
+            node_id,
+        ),
         else => std.debug.panic("TODO: {}", .{self.nodes()[node_id]}),
     }
 }
@@ -680,10 +759,18 @@ pub fn convertStmt(
 ) Error!void {
     switch (self.nodes()[node_id]) {
         .decl => {
-            try self.convertDecl(alloc, name_hint, node_id);
+            try self.convertLocalDecl(
+                alloc,
+                name_hint,
+                node_id,
+            );
         },
         else => {
-            _ = try self.convertExpr(alloc, name_hint, node_id);
+            _ = try self.convertExpr(
+                alloc,
+                name_hint,
+                node_id,
+            );
         },
     }
 }
@@ -828,13 +915,5 @@ pub const Builder = struct {
         self.top -= 1;
 
         return instr;
-    }
-
-    pub fn popBlockDiscard(
-        self: *@This(),
-    ) void {
-        const top_scope = self.topScope();
-        top_scope.clearRetainingCapacity();
-        self.top -= 1;
     }
 };
