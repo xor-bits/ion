@@ -47,7 +47,7 @@
 // };
 
 let global = 10;
-let nothing = fn() {};
+let nothing = fn(v: u32) { v };
 let main = fn() {
     let a = 5;
     let b = 6;

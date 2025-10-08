@@ -112,6 +112,10 @@ pub const Instr = union(enum) {
     void_lit: struct {
         result: RegId,
     },
+    type_lit: struct {
+        result: RegId,
+        value: BuiltinType,
+    },
 
     // /// always followed by another `.struct_field` or `.struct_finish`
     // struct_field: struct {
@@ -158,6 +162,23 @@ pub const BuiltinFunc = enum {
 
     neg,
     not,
+};
+
+pub const BuiltinType = enum {
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    isize,
+    f32,
+    f64,
+    bool,
+    void,
 };
 
 pub const Block = struct {
@@ -324,12 +345,18 @@ fn dumpInstr(
 ) void {
     switch (instr) {
         .let => |v| {
-            _ = v;
-            @panic("todo");
+            std.debug.print("    @let{s}({f}, {s})\n", .{
+                if (v.mut) "_mut" else "",
+                v.value,
+                v.ident.read(self.parser.tokenizer.source),
+            });
         },
         .let_param => |v| {
-            _ = v;
-            @panic("todo");
+            std.debug.print("    @let{s}_param({f}, {s})\n", .{
+                if (v.mut) "_mut" else "",
+                v.value,
+                v.ident.read(self.parser.tokenizer.source),
+            });
         },
         .get_field => |v| {
             std.debug.print("    {f} = @get_field({f}, {})\n", .{
@@ -360,6 +387,12 @@ fn dumpInstr(
         .void_lit => |v| {
             std.debug.print("    {f} = {{}}\n", .{
                 v.result,
+            });
+        },
+        .type_lit => |v| {
+            std.debug.print("    {f} = <{t}>\n", .{
+                v.result,
+                v.value,
             });
         },
 
@@ -551,6 +584,12 @@ fn convertProtoBare(
         const param_name = param.ident.read(self.parser.tokenizer.source);
         const param_type = try self.convertExpr(alloc, name_hint, param.type);
 
+        try self.builder.pushOne(alloc, .{ .let_param = .{
+            .ident = param.ident,
+            .mut = true,
+            .value = param_type,
+        } });
+
         try self.symbols.set(alloc, param_name, param_type);
     }
 
@@ -696,10 +735,22 @@ pub fn convertExpr(
         },
         .access => |v| {
             const sym = v.ident.read(self.parser.tokenizer.source);
-            return self.symbols.get(sym) orelse {
-                std.debug.print("unknown symbol: {s}\n", .{sym});
-                return error.UnknownSymbol;
-            };
+
+            if (self.symbols.get(sym)) |found| {
+                return found;
+            }
+
+            if (std.meta.stringToEnum(BuiltinType, sym)) |ty| {
+                const result = self.local.next();
+                try self.builder.pushOne(alloc, .{ .type_lit = .{
+                    .result = result,
+                    .value = ty,
+                } });
+                return result;
+            }
+
+            std.debug.print("unknown symbol: {s}\n", .{sym});
+            return error.UnknownSymbol;
         },
         .scope => return try self.convertScope(
             alloc,
