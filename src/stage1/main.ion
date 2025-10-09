@@ -1,13 +1,16 @@
-let printf = extern fn(s: *u8, ..): c_int @ "printf";
-
 let global = 10;
 
 let nothing = fn(v: u32): u32 { v };
+
+let print = fn(s: []u8) {
+    let printf = extern fn(s: *u8, ..): c_int @ "printf";
+    let res = printf("%.*s\n\x00".ptr as _, s.len, s.ptr);
+};
 
 let main = fn() {
     let a = 5;
     let b = 6;
     let c = a + b + global;
     let d = nothing(3);
-    let res = printf("Hello, world!\n\x00".ptr as _);
+    let res = print("Hello, world!");
 };
