@@ -34,6 +34,12 @@ pub const Node = union(enum) {
         expr: NodeId,
         // semi: Span,
     },
+    assign: struct {
+        lhs: NodeId,
+        // eq: Span,
+        rhs: NodeId,
+        // semi: Span,
+    },
     @"fn": struct {
         proto: NodeId,
         scope_or_symexpr: NodeId,
@@ -126,6 +132,7 @@ pub const BinaryOp = enum {
     mul,
     div,
     rem,
+    as,
 };
 
 pub const UnaryOp = enum {
@@ -146,7 +153,7 @@ pub const Error = error{
 
 nodes: std.ArrayListUnmanaged(Node) = .{},
 tokenizer: *Tokenizer,
-peek_buffer: ?SpannedToken = null,
+current: u32 = 0,
 
 pub fn deinit(
     self: *@This(),
@@ -159,6 +166,14 @@ pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) !void {
+    errdefer {
+        if (self.peek()) |current| {
+            std.debug.print("parse error at token: {s}\n", .{
+                current.span.read(self.tokenizer.source),
+            });
+        } else |_| {}
+    }
+
     // assume approx one node per 3 characters
     try self.nodes.ensureTotalCapacity(alloc, self.tokenizer.source.len / 3);
     self.nodes.clearRetainingCapacity();
@@ -199,10 +214,18 @@ fn allocNodes(
 fn peek(
     self: *@This(),
 ) Error!SpannedToken {
-    if (self.peek_buffer) |prev| return prev;
-    self.peek_buffer = self.tokenizer.next();
-    if (self.peek_buffer) |prev| return prev;
-    return Error.EndOfFile;
+    if (self.current >= self.tokenizer.tokens.len)
+        return Error.EndOfFile;
+    return self.tokenizer.tokens.get(self.current);
+}
+
+fn peekNth(
+    self: *@This(),
+    n: usize,
+) Error!SpannedToken {
+    if (self.current + n >= self.tokenizer.tokens.len)
+        return Error.EndOfFile;
+    return self.tokenizer.tokens.get(self.current + n);
 }
 
 fn peekToken(
@@ -215,6 +238,20 @@ fn peekSpan(
     self: *@This(),
 ) Error!Span {
     return (try self.peek()).span;
+}
+
+fn peekTokenNth(
+    self: *@This(),
+    n: usize,
+) Error!Token {
+    return (try self.peekNth(n)).token;
+}
+
+fn peekSpanNth(
+    self: *@This(),
+    n: usize,
+) Error!Span {
+    return (try self.peekNth(n)).span;
 }
 
 fn popIfEql(
@@ -231,7 +268,7 @@ fn popIfEql(
 fn advance(
     self: *@This(),
 ) void {
-    self.peek_buffer = null;
+    self.current += 1;
 }
 
 fn parseToken(
@@ -269,6 +306,7 @@ fn parseStructContents(
             .rbrace => break,
             else => return error.InvalidSyntax,
         }
+        _ = try self.parseToken(.semi);
     }
 
     return .{ .struct_contents = .{
@@ -334,9 +372,9 @@ fn parseDecl(
     }
     const eq = try self.parseToken(.eq);
     const expr = try self.parseExpr(alloc);
-    const semi = try self.parseToken(.semi);
+    // const semi = try self.parseToken(.semi);
 
-    _ = .{ let, eq, semi };
+    _ = .{ let, eq };
 
     return .{ .decl = .{
         .mut = mut != null,
@@ -354,7 +392,7 @@ fn parseExpr(
     switch (try self.peekToken()) {
         .lbracket => return self.parseSlice(alloc),
         .asterisk => return self.parsePointer(alloc),
-        else => return self.parseSum(alloc),
+        else => return self.parseAssign(alloc),
     }
 }
 
@@ -419,6 +457,53 @@ fn parsePointer(
         .pointee_expr = pointee,
         .mut = mut,
     } };
+}
+
+fn parseAssign(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!Node {
+    // std.log.debug("parse assign", .{});
+    var lhs = try self.parseCast(alloc);
+
+    if (try self.peekToken() == .eq) {
+        _ = self.advance();
+        const rhs = try self.parseCast(alloc);
+
+        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
+        lhs = .{ .assign = .{
+            .lhs = prev,
+            .rhs = try self.allocNode(alloc, rhs),
+        } };
+    }
+
+    return lhs;
+}
+
+fn parseCast(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!Node {
+    // std.log.debug("parse cast", .{});
+    var lhs = try self.parseSum(alloc);
+
+    while (true) {
+        const op = switch (try self.peekToken()) {
+            .as => BinaryOp.as,
+            else => break,
+        };
+        _ = self.advance();
+        const rhs = try self.parseSum(alloc);
+
+        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
+        lhs = .{ .binary_op = .{
+            .lhs = prev,
+            .op = op,
+            .rhs = try self.allocNode(alloc, rhs),
+        } };
+    }
+
+    return lhs;
 }
 
 fn parseSum(
@@ -933,6 +1018,11 @@ fn print(
                 v.ident.read(self.tokenizer.source),
             });
             self.print(v.expr, depth + 1);
+        },
+        .assign => |v| {
+            std.debug.print("assign:\n", .{});
+            self.print(v.lhs, depth + 1);
+            self.print(v.rhs, depth + 1);
         },
         .@"fn" => |v| {
             std.debug.print("fn:\n", .{});

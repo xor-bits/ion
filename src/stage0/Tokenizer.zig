@@ -10,6 +10,7 @@ pub const Token = enum {
     mut,
     @"fn",
     @"extern",
+    as,
 
     semi,
     colon,
@@ -53,21 +54,53 @@ pub const SpannedToken = struct {
     span: Span,
 };
 
-source: []const u8,
+tokens: std.MultiArrayList(SpannedToken) = .{},
+source: []const u8 = "",
 cursor: u32 = 0,
 
-pub fn next(
+source_file: std.fs.File,
+
+pub fn deinit(
     self: *@This(),
-) ?SpannedToken {
-    const tok = self.nextToken() orelse return null;
-    std.debug.print("{s:>10} : `{s}`\n", .{
-        @tagName(tok.token),
-        self.readSpan(tok.span),
-    });
-    return tok;
+    alloc: std.mem.Allocator,
+) void {
+    self.tokens.deinit(alloc);
+    alloc.free(self.source);
 }
 
-fn nextToken(
+pub fn run(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !void {
+    var read_buffer: [0x8000]u8 = undefined;
+
+    var source_reader = self.source_file.reader(&read_buffer);
+    const source_size = try source_reader.getSize();
+    const source = try alloc.alloc(u8, source_size);
+    const actual_source_size = try source_reader.read(source);
+    std.debug.assert(actual_source_size == source_size);
+    self.source = source;
+
+    try self.tokens.ensureUnusedCapacity(alloc, self.source.len / 2);
+
+    while (self.next()) |tok| {
+        try self.tokens.append(alloc, tok);
+    }
+}
+
+pub fn dump(
+    self: *@This(),
+) void {
+    for (0..self.tokens.len) |i| {
+        const tok = self.tokens.get(i);
+        std.debug.print("{t:>10} : `{s}`\n", .{
+            tok.token,
+            self.readSpan(tok.span),
+        });
+    }
+}
+
+fn next(
     self: *@This(),
 ) ?SpannedToken {
     var ch, var start_span = self.pop() orelse return null;
@@ -96,6 +129,7 @@ fn nextToken(
 
             'a'...'z',
             'A'...'Z',
+            '_',
             => {
                 continue :loop State.ident;
             },
@@ -214,6 +248,7 @@ fn nextToken(
                 mut,
                 @"fn",
                 @"extern",
+                as,
             };
 
             const keyword = std.meta.stringToEnum(Keyword, ident) orelse {

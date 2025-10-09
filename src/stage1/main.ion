@@ -1,89 +1,13 @@
-// let std = import("std");
-// let printf = extern fn(s: *u8, ..): c_int @ "printf";
-
-// let print = fn(s: []u8) {
-//     // /* 1 */ let printf: extern fn(s: *u8, ..): c_int = extern "printf";
-//     // /* 2 */ let extern printf = fn(s: *u8, ..): c_int;
-//     // /* 3 */ let printf = extern printf(s: *u8, ..): c_int;
-//     // /* 4 */ let printf = extern printf fn(s: *u8, ..): c_int;
-//     // /* 5 */ let printf = extern fn(s: *u8, ..): c_int "printf";
-//     // /* 5 */ let printf = extern fn(s: *u8, ..): c_int @ "printf";
-//     // /* 5 */ let print = fn(s: []u8) { /* */ };
-//     printf("%.*s\0", s.len, s.ptr);
-// };
-
-// let sum = fn(T: type, a: T, b: T): T {
-//     a + b
-// };
-// ->
-// let sum = fn(a: u32, b: u32): u32 {
-//     core.builtin_add(a, b)
-// };
-// ->
-// /* concept pre-sema IR */
-// function sum:
-//   setup:
-//     %0 = @arg(0)
-//     %1: %0 = @arg(1)
-//     %2: %0 = @arg(2)
-//     @returns(%0)
-//   entry:
-//     call_arg %1
-//     call_arg %2
-//     %3 = call_finish_builtin .add
-//     return %3
-
-
-// let add = fn(a: u32, b: u32): u32 {
-//     a + b
-// };
-
-// let T = fn(): type {
-//     if ?? {
-//         u32
-//     } else {
-//         u64
-//     }
-// };
+let printf = extern fn(s: *u8, ..): c_int @ "printf";
 
 let global = 10;
-let nothing = fn(v: u32) { v };
+
+let nothing = fn(v: u32): u32 { v };
+
 let main = fn() {
     let a = 5;
     let b = 6;
     let c = a + b + global;
-    nothing();
-    // print("Hello, world!");
+    let d = nothing(3);
+    let res = printf("Hello, world!\n\x00".ptr as _);
 };
-
-// \/
-
-// let global = tmp();
-// fn _tmp() { 10 }
-// fn nothing() {}
-// fn main() {
-//     let a = 5;
-//     let b = 6;
-//     let c = a + b + global;
-//     nothing();
-// }
-
-// \/
-
-// g1 = 10;
-// g2 = _nothing;
-// g3 = _main;
-// 
-// function _nothing:
-//     entry:
-//         return
-// function _main:
-//     entry:
-//         l1 = 5
-//         l2 = 6
-//         l3 = l1 + l2
-//         l4 = l3 + g1
-//         g2()
-//         return
-// }
-

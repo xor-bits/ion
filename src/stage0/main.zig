@@ -2,9 +2,9 @@ const std = @import("std");
 
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
-const IrGenerator = @import("IrGenerator.zig");
+// const IrGenerator = @import("IrGenerator.zig");
 // const Sema = @import("Sema.zig");
-// const Codegen = @import("Codegen.zig");
+const Codegen = @import("Codegen.zig");
 
 pub fn main() !u8 {
     var gpf = std.heap.GeneralPurposeAllocator(.{}){};
@@ -24,19 +24,22 @@ pub fn main() !u8 {
         return 1;
     };
 
+    const destin_path = args.next() orelse {
+        std.log.err("expected destination file argument", .{});
+        return 1;
+    };
+
     const source_file = try std.fs.cwd().openFile(source_path, .{});
     defer source_file.close();
 
-    var read_buffer: [0x8000]u8 = undefined;
+    const destin_file = try std.fs.cwd().createFile(destin_path, .{});
+    defer destin_file.close();
 
-    var source_reader = source_file.reader(&read_buffer);
-    const source_size = try source_reader.getSize();
-    const source = try alloc.alloc(u8, source_size);
-    defer alloc.free(source);
-    std.debug.assert(try source_reader.read(source) == source_size);
+    var tokenizer: Tokenizer = .{ .source_file = source_file };
+    defer tokenizer.deinit(alloc);
+    try tokenizer.run(alloc);
 
-    var tokenizer: Tokenizer = .{ .source = source };
-    // while (tokenizer.next()) |_| {}
+    tokenizer.dump();
 
     var parser: Parser = .{ .tokenizer = &tokenizer };
     defer parser.deinit(alloc);
@@ -44,18 +47,17 @@ pub fn main() !u8 {
 
     parser.dump();
 
-    var ir_gen: IrGenerator = .{ .parser = &parser };
-    defer ir_gen.deinit(alloc);
-    try ir_gen.run(alloc);
+    // var ir_gen: IrGenerator = .{ .parser = &parser };
+    // defer ir_gen.deinit(alloc);
+    // try ir_gen.run(alloc);
 
-    ir_gen.dump();
+    // ir_gen.dump();
 
-    // var codegen: Codegen = .{
-    //     .ast = parser.nodes.items,
-    //     .source = source,
-    // };
-    // defer codegen.deinit(alloc);
-    // try codegen.run(alloc);
+    var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
+    defer codegen.deinit(alloc);
+    try codegen.run(alloc);
+
+    parser.dump();
 
     return 0;
 }
@@ -68,16 +70,18 @@ pub fn Range(
         start: T = default,
         end: T = default,
 
+        const Self = @This();
+
         pub fn len(
-            self: @This(),
+            self: Self,
         ) u32 {
             return self.end - self.start;
         }
 
         pub fn merge(
-            a: @This(),
-            b: @This(),
-        ) @This() {
+            a: Self,
+            b: Self,
+        ) Self {
             return .{
                 .start = @min(a.start, b.start),
                 .end = @max(a.end, b.end),
@@ -85,15 +89,15 @@ pub fn Range(
         }
 
         pub fn read(
-            self: @This(),
+            self: Self,
             src: anytype,
         ) @TypeOf(src) {
             return src[self.start..self.end];
         }
 
         pub fn splitLast(
-            self: @This(),
-        ) ?struct { @This(), T } {
+            self: Self,
+        ) ?struct { Self, T } {
             if (self.len() == 0) return null;
             return .{
                 .{
@@ -105,3 +109,41 @@ pub fn Range(
         }
     };
 }
+
+pub const NameHint = struct {
+    prev: ?*const NameHint = null,
+    part: []const u8 = "??",
+
+    pub fn push(
+        self: *const @This(),
+        part: []const u8,
+    ) @This() {
+        return .{
+            .prev = self,
+            .part = part,
+        };
+    }
+
+    pub fn generate(
+        self: *const @This(),
+        alloc: std.mem.Allocator,
+    ) ![]const u8 {
+        var len: usize = 0;
+        var cur: ?*const @This() = self;
+        while (cur) |next| {
+            cur = next.prev;
+            len += next.part.len + 1;
+        }
+
+        const name = try alloc.alloc(u8, len);
+        cur = self;
+        while (cur) |next| {
+            cur = next.prev;
+            name[len - 1] = '_';
+            len -= next.part.len + 1;
+            std.mem.copyForwards(u8, name[len..], next.part);
+        }
+
+        return name;
+    }
+};

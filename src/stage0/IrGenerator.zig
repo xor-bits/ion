@@ -5,44 +5,7 @@ const Span = Tokenizer.Span;
 const Node = Parser.Node;
 const NodeId = Parser.NodeId;
 const Range = @import("main.zig").Range;
-
-pub const NameHint = struct {
-    prev: ?*const NameHint = null,
-    part: []const u8 = "??",
-
-    pub fn push(
-        self: *const @This(),
-        part: []const u8,
-    ) @This() {
-        return .{
-            .prev = self,
-            .part = part,
-        };
-    }
-
-    pub fn generate(
-        self: *const @This(),
-        alloc: std.mem.Allocator,
-    ) ![]const u8 {
-        var len: usize = 0;
-        var cur: ?*const @This() = self;
-        while (cur) |next| {
-            cur = next.prev;
-            len += next.part.len + 1;
-        }
-
-        const name = try alloc.alloc(u8, len);
-        cur = self;
-        while (cur) |next| {
-            cur = next.prev;
-            name[len - 1] = '_';
-            len -= next.part.len + 1;
-            std.mem.copyForwards(u8, name[len..], next.part);
-        }
-
-        return name;
-    }
-};
+const NameHint = @import("main.zig").NameHint;
 
 pub const InstrId = struct { u32 };
 pub const InstrRange = Range(InstrId, .{0});
