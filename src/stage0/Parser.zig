@@ -34,6 +34,12 @@ pub const Node = union(enum) {
         expr: NodeId,
         // semi: Span,
     },
+    @"if": struct {
+        // @"if": Span,
+        check_expr: NodeId,
+        on_true_scope: NodeId,
+        on_false_scope: NodeId,
+    },
     assign: struct {
         lhs: NodeId,
         // eq: Span,
@@ -679,6 +685,7 @@ fn parseAtom(
         },
         .lbrace => return try self.parseScope(alloc),
         .@"fn", .@"extern" => return try self.parseFn(alloc),
+        .@"if" => return try self.parseIf(alloc),
         else => return error.InvalidSyntax,
     }
 }
@@ -914,6 +921,41 @@ fn parseParam(
     } };
 }
 
+fn parseIf(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !Node {
+    _ = try self.parseToken(.@"if");
+    const check_expr = try self.parseExpr(alloc);
+    const on_true_scope = try self.parseScope(alloc);
+    var on_false_scope: Node = undefined;
+
+    if (self.peekToken() catch .invalid_byte == .@"else") {
+        _ = try self.parseToken(.@"else");
+
+        if (self.peekToken() catch .invalid_byte == .@"if") {
+            const nested_if = try self.allocNode(alloc, try self.parseIf(alloc));
+            on_false_scope = .{ .scope = .{
+                .stmts = .{ .start = nested_if, .end = nested_if + 1 },
+                .has_trailing_semi = true,
+            } };
+        } else {
+            on_false_scope = try self.parseScope(alloc);
+        }
+    } else {
+        on_false_scope = .{ .scope = .{
+            .stmts = .{},
+            .has_trailing_semi = true,
+        } };
+    }
+
+    return .{ .@"if" = .{
+        .check_expr = try self.allocNode(alloc, check_expr),
+        .on_true_scope = try self.allocNode(alloc, on_true_scope),
+        .on_false_scope = try self.allocNode(alloc, on_false_scope),
+    } };
+}
+
 fn parseScope(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -1018,6 +1060,18 @@ fn print(
                 v.ident.read(self.tokenizer.source),
             });
             self.print(v.expr, depth + 1);
+        },
+        .@"if" => |v| {
+            std.debug.print("if:\n", .{});
+            indent(depth + 1);
+            std.debug.print("check:\n", .{});
+            self.print(v.check_expr, depth + 2);
+            indent(depth + 1);
+            std.debug.print("on_true:\n", .{});
+            self.print(v.on_true_scope, depth + 2);
+            indent(depth + 1);
+            std.debug.print("on_false:\n", .{});
+            self.print(v.on_false_scope, depth + 2);
         },
         .assign => |v| {
             std.debug.print("assign:\n", .{});

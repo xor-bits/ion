@@ -11,6 +11,8 @@ pub const Token = enum {
     @"fn",
     @"extern",
     as,
+    @"if",
+    @"else",
 
     semi,
     colon,
@@ -45,6 +47,16 @@ pub const Token = enum {
     float_lit,
 
     invalid_byte,
+};
+
+const Keyword = enum {
+    let,
+    mut,
+    @"fn",
+    @"extern",
+    as,
+    @"if",
+    @"else",
 };
 
 pub const Span = Range(u32, 0);
@@ -242,14 +254,6 @@ fn next(
 
             const full_span = start_span.merge(span);
             const ident = self.readSpan(full_span);
-
-            const Keyword = enum {
-                let,
-                mut,
-                @"fn",
-                @"extern",
-                as,
-            };
 
             const keyword = std.meta.stringToEnum(Keyword, ident) orelse {
                 return .{

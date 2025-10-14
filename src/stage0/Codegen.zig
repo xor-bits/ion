@@ -13,7 +13,7 @@ pub const Variable = struct {
     depth: u8,
 };
 
-pub const BuiltinType = enum {
+pub const BuiltinVariable = enum {
     u8,
     u16,
     u32,
@@ -39,6 +39,9 @@ pub const BuiltinType = enum {
     c_ulong,
     c_ulonglong,
     c_ushort,
+
+    false,
+    true,
 };
 
 pub const Error = error{
@@ -114,7 +117,7 @@ fn findVariable(
         name_str,
     });
 
-    if (null != std.meta.stringToEnum(BuiltinType, name_str)) return .{
+    if (null != std.meta.stringToEnum(BuiltinVariable, name_str)) return .{
         .ident = name,
         .depth = 0,
         .version = 0,
@@ -167,7 +170,7 @@ pub fn run(
     var source_writer = self.destin_file.writer(&write_buffer);
     const writer = &source_writer.interface;
 
-    for (std.enums.values(BuiltinType)) |builtin| {
+    for (std.enums.values(BuiltinVariable)) |builtin| {
         try writer.print("const {0t}_0 = {0t};\n", .{
             builtin,
         });
@@ -451,6 +454,12 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
+        .@"if" => try self.convertIf(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
         else => std.debug.panic("TODO: {}", .{self.nodes()[node_id]}),
     }
 
@@ -622,10 +631,6 @@ pub fn convertFn(
     }
 }
 
-const s = (struct {
-    pub extern fn printf(s: *const u8, ...) c_int;
-}).printf;
-
 pub fn convertProto(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -670,4 +675,36 @@ pub fn convertProto(
     } else {
         try writer.print("void", .{});
     }
+}
+
+pub fn convertIf(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const if_check = self.nodes()[node_id].@"if";
+
+    try writer.print("if (", .{});
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        if_check.check_expr,
+    );
+    try writer.print(") ", .{});
+    try self.convertScope(
+        alloc,
+        writer,
+        name_hint,
+        if_check.on_true_scope,
+    );
+    try writer.print(" else ", .{});
+    try self.convertScope(
+        alloc,
+        writer,
+        name_hint,
+        if_check.on_false_scope,
+    );
 }

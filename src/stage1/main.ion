@@ -7,10 +7,17 @@ let print = fn(s: []u8) {
     let res = printf("%.*s\n\x00".ptr as _, s.len, s.ptr);
 };
 
+let rand = fn(): c_long {
+    let random = extern fn(): c_long @ "random";
+    random()
+};
+
 let main = fn() {
     let a = 5;
     let b = 6;
     let c = a + b + global;
     let d = nothing(3);
-    let res = print("Hello, world!");
+    if true {
+        print("Hello, world!");
+    };
 };
