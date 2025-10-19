@@ -17,7 +17,9 @@ let main = fn() {
     let b = 6;
     let c = a + b + global;
     let d = nothing(3);
-    if true {
+    let printf = extern fn(s: *u8, ..): c_int @ "printf";
+    _ = printf("num: %l\n\x00".ptr as _, rand());
+    if rand() > 1073741823 {
         print("Hello, world!");
     };
 };

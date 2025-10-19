@@ -11,6 +11,29 @@ pub const Variable = struct {
     ident: Span,
     version: u32,
     depth: u8,
+
+    pub const VariableFmt = struct {
+        base_name: []const u8,
+        version: u32,
+
+        pub fn format(
+            self: *const @This(),
+            writer: *std.io.Writer,
+        ) std.io.Writer.Error!void {
+            if (std.mem.eql(u8, self.base_name, "_")) {
+                try writer.pritn("_", .{});
+            } else {
+                writer.print("{s}_{}", .{ self.base_name, self.version });
+            }
+        }
+    };
+
+    pub fn print(self: *@This(), src: []const u8) VariableFmt {
+        return .{
+            .base_name = self.ident.read(src),
+            .version = self.version,
+        };
+    }
 };
 
 pub const BuiltinVariable = enum {
@@ -338,6 +361,12 @@ pub fn convertExpr(
                     .mul => "*",
                     .div => "/",
                     .rem => "%",
+                    .eq => "==",
+                    .neq => "!=",
+                    .lt => "<",
+                    .le => "<=",
+                    .gt => ">",
+                    .ge => ">=",
                     .as => unreachable,
                 }});
                 try self.convertExpr(
@@ -455,6 +484,12 @@ pub fn convertExpr(
             node_id,
         ),
         .@"if" => try self.convertIf(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .assign => try self.convertAssign(
             alloc,
             writer,
             name_hint,
@@ -706,5 +741,29 @@ pub fn convertIf(
         writer,
         name_hint,
         if_check.on_false_scope,
+    );
+}
+
+pub fn convertAssign(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const assign = self.nodes()[node_id].assign;
+
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        assign.lhs,
+    );
+    try writer.print(" = ", .{});
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        assign.rhs,
     );
 }
