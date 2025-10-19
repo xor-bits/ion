@@ -11,6 +11,32 @@ pub const Variable = struct {
     ident: Span,
     version: u32,
     depth: u8,
+    builtin: bool = false,
+
+    pub const VariableFmt = struct {
+        base_name: []const u8,
+        version: u32,
+        builtin: bool,
+
+        pub fn format(
+            self: *const @This(),
+            writer: *std.io.Writer,
+        ) std.io.Writer.Error!void {
+            if (self.builtin) {
+                try writer.print("{s}", .{self.base_name});
+            } else {
+                try writer.print("{s}_{}", .{ self.base_name, self.version });
+            }
+        }
+    };
+
+    pub fn print(self: *const @This(), src: []const u8) VariableFmt {
+        return .{
+            .base_name = self.ident.read(src),
+            .version = self.version,
+            .builtin = self.builtin,
+        };
+    }
 };
 
 pub const BuiltinVariable = enum {
@@ -117,10 +143,18 @@ fn findVariable(
         name_str,
     });
 
+    if (std.mem.eql(u8, name_str, "_")) return .{
+        .ident = name,
+        .depth = 0,
+        .version = 0,
+        .builtin = true,
+    };
+
     if (null != std.meta.stringToEnum(BuiltinVariable, name_str)) return .{
         .ident = name,
         .depth = 0,
         .version = 0,
+        .builtin = true,
     };
 
     for (0..slice.len) |i| {
@@ -153,9 +187,8 @@ fn createVariable(
         .version = 0,
     };
 
-    std.debug.print("create {s}_{}\n", .{
-        new.ident.read(self.source()),
-        new.version,
+    std.debug.print("create {f}\n", .{
+        new.print(self.source()),
     });
 
     try self.variable_version_map.append(alloc, new);
@@ -231,9 +264,8 @@ pub fn convertDecl(
         });
     }
 
-    try writer.print("{s}_{}", .{
-        name,
-        variable.version,
+    try writer.print("{f}", .{
+        variable.print(self.source()),
     });
 
     if (decl.type_hint) |i| {
@@ -256,9 +288,8 @@ pub fn convertDecl(
     );
 
     if (mode == .local)
-        try writer.print(";\n_ = .{{{s}_{}}}", .{
-            name,
-            variable.version,
+        try writer.print(";\n_ = .{{{f}}}", .{
+            variable.print(self.source()),
         });
 }
 
@@ -338,6 +369,12 @@ pub fn convertExpr(
                     .mul => "*",
                     .div => "/",
                     .rem => "%",
+                    .eq => "==",
+                    .neq => "!=",
+                    .lt => "<",
+                    .le => "<=",
+                    .gt => ">",
+                    .ge => ">=",
                     .as => unreachable,
                 }});
                 try self.convertExpr(
@@ -431,10 +468,7 @@ pub fn convertExpr(
         },
         .access => |v| {
             const variable = try self.findVariable(v.ident);
-            try writer.print("{s}_{}", .{
-                variable.ident.read(self.source()),
-                variable.version,
-            });
+            try writer.print("{f}", .{variable.print(self.source())});
         },
         .scope => try self.convertScope(
             alloc,
@@ -455,6 +489,12 @@ pub fn convertExpr(
             node_id,
         ),
         .@"if" => try self.convertIf(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .assign => try self.convertAssign(
             alloc,
             writer,
             name_hint,
@@ -491,6 +531,7 @@ pub fn convertScope(
                 writer,
                 name_hint,
                 @intCast(i),
+                true,
             );
         }
 
@@ -503,6 +544,7 @@ pub fn convertScope(
             writer,
             name_hint,
             last_stmt,
+            scope.has_trailing_semi,
         );
         if (scope.has_trailing_semi)
             try writer.print("break :_{} {{}};", .{
@@ -523,6 +565,7 @@ pub fn convertStmt(
     writer: *std.io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
+    discard: bool,
 ) Error!void {
     switch (self.nodes()[node_id]) {
         .decl => {
@@ -535,6 +578,10 @@ pub fn convertStmt(
             );
         },
         else => {
+            if (discard) {
+                try writer.print("_ = ", .{});
+            }
+
             try self.convertExpr(
                 alloc,
                 writer,
@@ -580,9 +627,8 @@ pub fn convertFn(
             param.ident,
         );
 
-        try writer.print("{s}_{}: ", .{
-            param.ident.read(self.source()),
-            param_variable.version,
+        try writer.print("{f}: ", .{
+            param_variable.print(self.source()),
         });
         try self.convertExpr(
             alloc,
@@ -651,9 +697,8 @@ pub fn convertProto(
             param.ident,
         );
 
-        try writer.print("{s}_{}: ", .{
-            param.ident.read(self.source()),
-            param_variable.version,
+        try writer.print("{f}: ", .{
+            param_variable.print(self.source()),
         });
         try self.convertExpr(
             alloc,
@@ -706,5 +751,29 @@ pub fn convertIf(
         writer,
         name_hint,
         if_check.on_false_scope,
+    );
+}
+
+pub fn convertAssign(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const assign = self.nodes()[node_id].assign;
+
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        assign.lhs,
+    );
+    try writer.print(" = ", .{});
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        assign.rhs,
     );
 }

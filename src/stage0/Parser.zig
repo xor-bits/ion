@@ -139,6 +139,13 @@ pub const BinaryOp = enum {
     div,
     rem,
     as,
+
+    eq,
+    neq,
+    lt,
+    le,
+    gt,
+    ge,
 };
 
 pub const UnaryOp = enum {
@@ -332,8 +339,8 @@ fn parseField(
 
     const tok = try self.peekToken();
     switch (tok) {
-        .eq => {
-            const eq = try self.parseToken(.eq);
+        .single_eq => {
+            const eq = try self.parseToken(.single_eq);
             const default = try self.parseExpr(alloc);
             const comma = try self.parseToken(.comma);
 
@@ -376,7 +383,7 @@ fn parseDecl(
         self.advance();
         type_hint = try self.allocNode(alloc, try self.parseExpr(alloc));
     }
-    const eq = try self.parseToken(.eq);
+    const eq = try self.parseToken(.single_eq);
     const expr = try self.parseExpr(alloc);
     // const semi = try self.parseToken(.semi);
 
@@ -398,7 +405,7 @@ fn parseExpr(
     switch (try self.peekToken()) {
         .lbracket => return self.parseSlice(alloc),
         .asterisk => return self.parsePointer(alloc),
-        else => return self.parseAssign(alloc),
+        else => return self.parseComparison(alloc),
     }
 }
 
@@ -465,6 +472,37 @@ fn parsePointer(
     } };
 }
 
+fn parseComparison(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!Node {
+    // std.log.debug("parse comparison", .{});
+    var lhs = try self.parseAssign(alloc);
+
+    while (true) {
+        const op = switch (self.peekToken() catch break) {
+            .double_eq => BinaryOp.eq,
+            .neq => BinaryOp.neq,
+            .lt => BinaryOp.lt,
+            .le => BinaryOp.le,
+            .gt => BinaryOp.gt,
+            .ge => BinaryOp.ge,
+            else => break,
+        };
+        _ = self.advance();
+        const rhs = try self.parseAssign(alloc);
+
+        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
+        lhs = .{ .binary_op = .{
+            .lhs = prev,
+            .op = op,
+            .rhs = try self.allocNode(alloc, rhs),
+        } };
+    }
+
+    return lhs;
+}
+
 fn parseAssign(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -472,7 +510,7 @@ fn parseAssign(
     // std.log.debug("parse assign", .{});
     var lhs = try self.parseCast(alloc);
 
-    if (try self.peekToken() == .eq) {
+    if (try self.peekToken() == .single_eq) {
         _ = self.advance();
         const rhs = try self.parseCast(alloc);
 
@@ -608,7 +646,7 @@ fn parseChain(
                     .args = args,
                 } };
             },
-            .dot => {
+            .single_dot => {
                 // std.log.debug("parse field_acc", .{});
                 self.advance();
                 const ident = try self.parseToken(.ident);

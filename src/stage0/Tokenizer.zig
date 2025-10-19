@@ -17,7 +17,7 @@ pub const Token = enum {
     semi,
     colon,
     comma,
-    dot,
+    single_dot,
     double_dot,
     lparen,
     rparen,
@@ -26,7 +26,8 @@ pub const Token = enum {
     lbracket,
     rbracket,
 
-    eq,
+    single_eq,
+    double_eq,
     neq,
     lt,
     le,
@@ -172,7 +173,7 @@ fn next(
                     ':' => .colon,
                     ',' => .comma,
                     '.' => b: {
-                        ch, span = self.popIfEql('.') orelse break :b .dot;
+                        ch, span = self.popIfEql('.') orelse break :b .single_dot;
                         break :b .double_dot;
                     },
                     '(' => .lparen,
@@ -181,9 +182,12 @@ fn next(
                     '}' => .rbrace,
                     '[' => .lbracket,
                     ']' => .rbracket,
-                    '=' => .eq,
 
                     '@' => .at,
+                    '=' => b: {
+                        ch, span = self.popIfEql('=') orelse break :b .single_eq;
+                        break :b .double_eq;
+                    },
                     '!' => b: {
                         ch, span = self.popIfEql('=') orelse break :b .exclam;
                         break :b .neq;

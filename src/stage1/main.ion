@@ -7,6 +7,12 @@ let print = fn(s: []u8) {
     let res = printf("%.*s\n\x00".ptr as _, s.len, s.ptr);
 };
 
+let rand_init = fn() {
+    let srand = extern fn(seed: c_uint) @ "srand";
+    let time = extern fn(seed: c_ulonglong): c_uint @ "time";
+    srand(time(0));
+};
+
 let rand = fn(): c_long {
     let random = extern fn(): c_long @ "random";
     random()
@@ -17,7 +23,11 @@ let main = fn() {
     let b = 6;
     let c = a + b + global;
     let d = nothing(3);
-    if true {
+
+    rand_init();
+    let printf = extern fn(s: *u8, ..): c_int @ "printf";
+    printf("num: %ld\n\x00".ptr as _, rand());
+    if rand() > 1073741823 {
         print("Hello, world!");
     };
 };
