@@ -13,6 +13,8 @@ pub const Token = enum {
     as,
     @"if",
     @"else",
+    @"for",
+    loop,
 
     semi,
     colon,
@@ -58,6 +60,8 @@ const Keyword = enum {
     as,
     @"if",
     @"else",
+    @"for",
+    loop,
 };
 
 pub const Span = Range(u32, 0);

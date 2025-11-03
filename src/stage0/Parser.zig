@@ -40,6 +40,16 @@ pub const Node = union(enum) {
         on_true_scope: NodeId,
         on_false_scope: NodeId,
     },
+    // @"for": struct {
+    //     // @"for": Span,
+    //     check_expr: NodeId,
+    //     on_true_scope: NodeId,
+    //     on_false_scope: NodeId,
+    // },
+    loop: struct {
+        // @"loop": Span,
+        scope: NodeId,
+    },
     assign: struct {
         lhs: NodeId,
         // eq: Span,
@@ -402,11 +412,7 @@ fn parseExpr(
     alloc: std.mem.Allocator,
 ) Error!Node {
     // std.log.debug("parse expr", .{});
-    switch (try self.peekToken()) {
-        .lbracket => return self.parseSlice(alloc),
-        .asterisk => return self.parsePointer(alloc),
-        else => return self.parseComparison(alloc),
-    }
+    return self.parseComparison(alloc);
 }
 
 fn parseSlice(
@@ -724,6 +730,9 @@ fn parseAtom(
         .lbrace => return try self.parseScope(alloc),
         .@"fn", .@"extern" => return try self.parseFn(alloc),
         .@"if" => return try self.parseIf(alloc),
+        .loop => return try self.parseLoop(alloc),
+        .lbracket => return self.parseSlice(alloc),
+        .asterisk => return self.parsePointer(alloc),
         else => return error.InvalidSyntax,
     }
 }
@@ -994,6 +1003,18 @@ fn parseIf(
     } };
 }
 
+fn parseLoop(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !Node {
+    _ = try self.parseToken(.loop);
+
+    const scope = try self.parseScope(alloc);
+    return .{ .loop = .{
+        .scope = try self.allocNode(alloc, scope),
+    } };
+}
+
 fn parseScope(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -1110,6 +1131,10 @@ fn print(
             indent(depth + 1);
             std.debug.print("on_false:\n", .{});
             self.print(v.on_false_scope, depth + 2);
+        },
+        .loop => |v| {
+            std.debug.print("loop scope:\n", .{});
+            self.print(v.scope, depth + 1);
         },
         .assign => |v| {
             std.debug.print("assign:\n", .{});
