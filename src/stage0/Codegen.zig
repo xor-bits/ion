@@ -209,6 +209,30 @@ pub fn run(
         });
     }
     try writer.print("pub const main = main_0;\n", .{});
+    try writer.writeAll(
+        \\pub fn builtin_cast(comptime T: type, val: anytype) T {
+        \\    const src = @typeInfo(@TypeOf(val));
+        \\    const dst = @typeInfo(T);
+        \\
+        \\    if ((src == .int or src == .comptime_int) and dst == .int) {
+        \\        return @intCast(val);
+        \\    } else if (src == .pointer and dst == .pointer) {
+        \\        if (src.pointer.is_const != dst.pointer.is_const) {
+        \\            return @constCast(val);
+        \\        } else if (src.pointer.is_volatile != dst.pointer.is_volatile) {
+        \\            return @volatileCast(val);
+        \\        } else {
+        \\            return @ptrCast(val);
+        \\        }
+        \\    } else if (src == .int and dst == .pointer) {
+        \\        return @ptrFromInt(val);
+        \\    } else if (src == .pointer and dst == .int) {
+        \\        return @intFromPtr(val);
+        \\    } else {
+        \\        comptime unreachable;
+        \\    }
+        \\}
+    );
 
     _ = try self.convertStructContents(
         alloc,
@@ -347,7 +371,14 @@ pub fn convertExpr(
         },
         .binary_op => |v| {
             if (v.op == .as) {
-                try writer.print("@ptrCast(", .{});
+                try writer.print("builtin_cast(", .{});
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.rhs,
+                );
+                try writer.print(",", .{});
                 try self.convertExpr(
                     alloc,
                     writer,
@@ -355,7 +386,6 @@ pub fn convertExpr(
                     v.lhs,
                 );
                 try writer.print(")", .{});
-                // TODO: rhs
             } else {
                 try self.convertExpr(
                     alloc,
@@ -364,10 +394,10 @@ pub fn convertExpr(
                     v.lhs,
                 );
                 try writer.print("{s}", .{switch (v.op) {
-                    .add => "+",
-                    .sub => "-",
-                    .mul => "*",
-                    .div => "/",
+                    .add => "+%",
+                    .sub => "-%",
+                    .mul => "*%",
+                    .div => "/%",
                     .rem => "%",
                     .eq => "==",
                     .neq => "!=",
@@ -489,6 +519,12 @@ pub fn convertExpr(
             node_id,
         ),
         .@"if" => try self.convertIf(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .loop => try self.convertLoop(
             alloc,
             writer,
             name_hint,
@@ -754,6 +790,24 @@ pub fn convertIf(
     );
 }
 
+pub fn convertLoop(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const loop = self.nodes()[node_id].loop;
+
+    try writer.print("while (true) ", .{});
+    try self.convertScope(
+        alloc,
+        writer,
+        name_hint,
+        loop.scope,
+    );
+}
+
 pub fn convertAssign(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -763,6 +817,7 @@ pub fn convertAssign(
 ) Error!void {
     const assign = self.nodes()[node_id].assign;
 
+    try writer.print("{{", .{});
     try self.convertExpr(
         alloc,
         writer,
@@ -776,4 +831,5 @@ pub fn convertAssign(
         name_hint,
         assign.rhs,
     );
+    try writer.print(";}}", .{});
 }

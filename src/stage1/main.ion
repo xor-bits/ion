@@ -4,7 +4,7 @@ let nothing = fn(v: u32): u32 { v };
 
 let print = fn(s: []u8) {
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
-    let res = printf("%.*s\n\x00".ptr as _, s.len, s.ptr);
+    let res = printf("%.*s\n\x00".ptr as *u8, s.len, s.ptr);
 };
 
 let rand_init = fn() {
@@ -13,21 +13,42 @@ let rand_init = fn() {
     srand(time(0));
 };
 
-let rand = fn(): c_long {
-    let random = extern fn(): c_long @ "random";
+let rand = fn(): c_int {
+    let random = extern fn(): c_int @ "random";
     random()
 };
 
 let main = fn() {
     let a = 5;
     let b = 6;
-    let c = a + b + global;
-    let d = nothing(3);
+    nothing(a + b + global);
 
+    // let buf: [256]u8 = undefined;
+    
     rand_init();
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
-    printf("num: %ld\n\x00".ptr as _, rand());
-    if rand() > 1073741823 {
+
+    let f = (rand() as c_uint) % 3;
+    if f == 0 {
+        loop {
+            let num = rand();
+            printf("num: %ld\n\x00".ptr as *u8, num);
+            if num > 1073741823 {
+                print("greater than 1073741823");
+            } else {
+                print("less than or equal to 1073741823");
+            };
+        };
+    } else if f == 1 {
+        let mut a = 0 as c_long;
+        let mut b = 1 as c_long;
+        loop {
+            printf("num: %ld\n\x00".ptr as *u8, a);
+            let tmp = a + b;
+            a = b;
+            b = tmp;
+        };
+    } else {
         print("Hello, world!");
     };
 };
