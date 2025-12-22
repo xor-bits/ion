@@ -4,65 +4,54 @@ const Tokenizer = @import("Tokenizer.zig");
 const Span = Tokenizer.Span;
 const Node = Parser.Node;
 const NodeId = Parser.NodeId;
+const UnaryOp = Parser.UnaryOp;
+const BinaryOp = Parser.BinaryOp;
 const Range = @import("main.zig").Range;
 const NameHint = @import("main.zig").NameHint;
+const log = std.log.scoped(.irgen);
 
-pub const InstrId = struct { u32 };
-pub const InstrRange = Range(InstrId, .{0});
-pub const RegId = packed struct {
-    idx: u30 = 0,
-    kind: enum(u2) {
-        local,
-        global,
-        func,
-    } = .local,
-
-    pub fn next(
-        counter: *@This(),
-    ) @This() {
-        defer counter.idx += 1;
-        return counter.*;
-    }
-
-    pub fn format(
-        self: *const @This(),
-        writer: *std.io.Writer,
-    ) std.io.Writer.Error!void {
-        const prefix = switch (self.kind) {
-            .local => "%",
-            .global => "g",
-            .func => "f",
-        };
-        try writer.print("{s}{}", .{
-            prefix,
-            self.idx,
-        });
+pub const RegId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("%{}", .{self.i});
     }
 };
+pub const InstrId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("i{}", .{self.i});
+    }
+};
+pub const BlockId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("b{}", .{self.i});
+    }
+};
+pub const StructId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("s{}", .{self.i});
+    }
+};
+pub const ProtoId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("p{}", .{self.i});
+    }
+};
+pub const FunctionId = struct {
+    i: u32,
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("f{}", .{self.i});
+    }
+};
+pub const InstrRange = Range(InstrId, .{ .i = 0 });
 
 pub const Instr = union(enum) {
-    /// create and initialize a variable
-    let: struct {
-        ident: Span,
-        mut: bool,
-        value: RegId,
-    },
-    /// create and initialize a meta variable: parameter
-    let_param: struct {
-        ident: Span,
-        mut: bool,
-        value: RegId,
-    },
-    /// reads the address of a field `a.b`
-    get_field: struct {
-        result: RegId,
-        container: RegId,
-        field_idx: u32,
-    },
-
     str_lit: struct {
         result: RegId,
-        value: Span,
+        value: []const u8,
     },
     int_lit: struct {
         result: RegId,
@@ -75,59 +64,93 @@ pub const Instr = union(enum) {
     void_lit: struct {
         result: RegId,
     },
-    type_lit: struct {
+    builtin_lit: struct {
         result: RegId,
-        value: BuiltinType,
+        builtin: BuiltinVariable,
     },
-
-    // /// always followed by another `.struct_field` or `.struct_finish`
-    // struct_field: struct {
-    //     field_ty: RegId,
-    // },
-    // /// creates a new struct type with fields given by earlier `.struct_field`s
-    // struct_finish: struct {},
-
-    // /// always followed by another `.func_param` or `.func_finish`
-    // func_param: struct {
-    //     param_ty: RegId,
-    // },
-    // /// creates a new function
-    // func_finish: struct {},
-
-    /// always followed by another `.call_arg`, `.call_finish` or '.call_finish_builtin'
-    call_arg: struct {
-        value: RegId,
-    },
-    /// calls a function `a()` with arguments given by earlier `.call_arg`s
-    call_finish: struct {
+    call: struct {
         result: RegId,
-        /// function to be called
         func: RegId,
     },
-    /// calls a function `a()` with arguments given by earlier `.call_arg`s
-    call_finish_builtin: struct {
+    unary_op: struct {
         result: RegId,
-        /// function to be called
-        func: BuiltinFunc,
+        value: RegId,
+        op: UnaryOp,
     },
-
-    pub fn allocatesRegister(self: @This()) bool {
-        switch (self) {}
-    }
+    binary_op: struct {
+        result: RegId,
+        lhs: RegId,
+        rhs: RegId,
+        op: BinaryOp,
+    },
+    arg_fetch: struct {
+        result: RegId,
+    },
+    assign: struct {
+        target: RegId,
+        value: RegId,
+    },
+    decl_fn: struct {
+        result: RegId,
+        func: FunctionId,
+    },
+    decl_proto: struct {
+        result: RegId,
+        proto: ProtoId,
+    },
+    decl_param: struct {
+        ty: RegId,
+    },
+    decl_return: struct {
+        ty: RegId,
+    },
+    decl_arg: struct {
+        value: RegId,
+    },
 };
 
-pub const BuiltinFunc = enum {
-    add,
-    sub,
-    mul,
-    div,
-    rem,
-
-    neg,
-    not,
+pub const BranchInstr = union(enum) {
+    conditional: struct {
+        boolean: RegId,
+        on_true: BlockId,
+        on_false: BlockId,
+    },
+    unconditional: BlockId,
+    ret: RegId,
+    end,
 };
 
-pub const BuiltinType = enum {
+pub const Block = struct {
+    instructions: InstrRange,
+    branch_instruction: BranchInstr,
+};
+
+pub const Struct = struct {
+    // parent: StructId,
+    decl_block: BlockId,
+};
+
+pub const Function = struct {
+    // parent: StructId,
+    proto: ProtoId,
+    entry_block: BlockId,
+};
+
+pub const Proto = struct {
+    // parent: StructId,
+    is_extern: bool,
+    is_va_args: bool,
+    decl_block: BlockId,
+};
+
+pub const Error = error{
+    TooManyRegisters,
+    OutOfMemory,
+    VariableNotFound,
+    MainFunctionMissing,
+};
+
+pub const BuiltinVariable = enum {
     u8,
     u16,
     u32,
@@ -142,52 +165,35 @@ pub const BuiltinType = enum {
     f64,
     bool,
     void,
+    auto_int,
+    auto_float,
+    
+
+    c_int,
+    c_char,
+    c_long,
+    c_longdouble,
+    c_longlong,
+    c_short,
+    c_uint,
+    c_ulong,
+    c_ulonglong,
+    c_ushort,
+
+    false,
+    true,
 };
 
-pub const Block = struct {
-    instructions: InstrRange,
-    branch: union(enum) {
-        @"return": RegId,
-    },
-};
+instrs: std.ArrayList(Instr) = .{},
+blocks: std.ArrayList(Block) = .{},
+structs: std.ArrayList(Struct) = .{},
+protos: std.ArrayList(Proto) = .{},
+functions: std.ArrayList(Function) = .{},
 
-pub const Static = struct {};
-
-pub const Prototype = struct {
-    /// meta block is used to evaluate parameter and return types
-    meta: Block,
-};
-
-pub const Function = struct {
-    symbol: []const u8,
-    /// meta block is used to evaluate parameter and return types
-    meta: Block,
-    /// main block is the actual code, before monomorphizing
-    main: Block,
-};
-
-pub const Namespace = struct {};
-
-pub const Global = struct {
-    symbol: []const u8,
-    block: Block,
-};
-
-pub const Error = error{
-    OutOfMemory,
-    UnknownSymbol,
-};
-
-instr: std.MultiArrayList(Instr) = .{},
-// statics: std.MultiArrayList(Static) = .{},
-functions: std.MultiArrayList(Function) = .{},
-// prototypes: std.MultiArrayList(Prototype) = .{},
-// namespaces: std.MultiArrayList(Namespace) = .{},
-globals: std.ArrayList(Global) = .{},
-global: RegId = .{ .kind = .global },
-local: RegId = .{ .kind = .local },
-symbols: Symbols = .{},
+param_stack: std.ArrayList(RegId) = .{},
+registers: Registers = .{},
 builder: Builder = .{},
+current_block: BlockId = .{ .i = 0 },
 
 // root_namespace: InstrId = 0,
 parser: *Parser,
@@ -197,16 +203,14 @@ pub fn deinit(
     alloc: std.mem.Allocator,
 ) void {
     self.builder.deinit(alloc);
-    self.symbols.deinit(alloc);
-    for (self.globals.items) |global| {
-        alloc.free(global.symbol);
-    }
-    self.globals.deinit(alloc);
-    for (0..self.functions.len) |i| {
-        alloc.free(self.functions.get(i).symbol);
-    }
+    self.registers.deinit(alloc);
+    self.param_stack.deinit(alloc);
+
     self.functions.deinit(alloc);
-    self.instr.deinit(alloc);
+    self.protos.deinit(alloc);
+    self.structs.deinit(alloc);
+    self.blocks.deinit(alloc);
+    self.instrs.deinit(alloc);
 }
 
 fn nodes(
@@ -221,72 +225,157 @@ fn source(
     return self.parser.tokenizer.source;
 }
 
-fn pushFunction(
+fn allocBlock(
     self: *@This(),
-) RegId {
-    defer self.local = .{ .kind = .local };
-    return self.local;
+    alloc: std.mem.Allocator,
+) Error!BlockId {
+    const block_id: BlockId = .{ .i = @intCast(self.blocks.items.len) };
+    try self.blocks.append(alloc, undefined);
+    return block_id;
 }
 
-fn popFunction(
+fn allocStruct(
     self: *@This(),
-    function_ptr: RegId,
+    alloc: std.mem.Allocator,
+) Error!StructId {
+    const struct_id: StructId = .{ .i = @intCast(self.structs.items.len) };
+    try self.structs.append(alloc, undefined);
+    return struct_id;
+}
+
+fn allocProto(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!ProtoId {
+    const proto_id: ProtoId = .{ .i = @intCast(self.protos.items.len) };
+    try self.protos.append(alloc, undefined);
+    return proto_id;
+}
+
+fn allocFunction(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!FunctionId {
+    const function_id: FunctionId = .{ .i = @intCast(self.functions.items.len) };
+    try self.functions.append(alloc, undefined);
+    return function_id;
+}
+
+fn pushScope(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!void {
+    try self.registers.pushScope(alloc);
+}
+
+fn popScope(
+    self: *@This(),
 ) void {
-    self.local = function_ptr;
-    self.local.idx += 1;
+    self.registers.popScope();
+}
+
+fn pushBlock(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!BlockId {
+    try self.builder.pushBlock(alloc);
+    self.current_block = try self.allocBlock(alloc);
+    return self.current_block;
+}
+
+fn popBlock(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    branch_instr: BranchInstr,
+    block_id: ?BlockId,
+) Error!void {
+    const current_block = block_id orelse self.current_block;
+    self.blocks.items[current_block.i] = try self.builder.popBlock(
+        alloc,
+        &self.instrs,
+        branch_instr,
+    );
 }
 
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) Error!void {
-    // measure the avg ir instruction count
-    try self.instr.ensureTotalCapacity(alloc, 16);
+    // TODO: measure the avg ir instruction count per source token
+    try self.instrs.ensureTotalCapacity(alloc, 16);
+    // TODO: measure the avg ir block count per source token
+    try self.blocks.ensureTotalCapacity(alloc, 16);
+    // TODO: measure the avg ir struct count per source token
+    try self.structs.ensureTotalCapacity(alloc, 16);
+    // TODO: measure the avg ir function count per source token
+    try self.functions.ensureTotalCapacity(alloc, 16);
 
-    try self.symbols.push(alloc);
-    defer self.symbols.pop(alloc);
-
+    _ = try self.pushBlock(alloc);
     try self.convertStructContents(
         alloc,
         &.{ .part = "<root>" },
-        self.nodes()[0].struct_contents,
+        0,
     );
+
+    // const main = self.registers.findVar("main") orelse {
+    //     return Error.MainFunctionMissing;
+    // };
+    // try self.builder.pushInstr(alloc, .{ .decl_entrypoint = .{
+    //     .func = main,
+    // } });
+
+    const ret = try self.convertVoidLit(alloc);
+    try self.popBlock(alloc, .{ .ret = ret }, null);
 }
 
 pub fn dump(
     self: *@This(),
 ) void {
     std.debug.print("IRGEN DUMP:\n", .{});
-    for (self.globals.items, 0..) |global, idx| {
+    for (self.blocks.items, 0..) |block, id| {
         std.debug.print(
-            \\{f} = global {s}:
-            \\  setup:
+            \\{f} = block:
             \\
         , .{
-            RegId{ .idx = @intCast(idx), .kind = .global },
-            global.symbol,
+            BlockId{ .i = @intCast(id) },
         });
-        self.dumpBlock(global.block);
+        self.dumpBlock(block);
     }
-    for (0..self.functions.len) |idx| {
-        const function = self.functions.get(idx);
+    for (self.structs.items, 0..) |str, id| {
         std.debug.print(
-            \\{f} = function {s}:
-            \\  setup:
+            \\{f} = struct:
+            \\    decl_block {f}
             \\
         , .{
-            RegId{ .idx = @intCast(idx), .kind = .func },
-            function.symbol,
+            StructId{ .i = @intCast(id) },
+            str.decl_block,
         });
-        self.dumpBlock(function.meta);
+    }
+    for (self.protos.items, 0..) |proto, id| {
         std.debug.print(
-            \\  entry:
+            \\{f} = proto:
+            \\    is_extern {}
+            \\    is_va_args {}
+            \\    decl_block {f}
             \\
-        , .{});
-        self.dumpBlock(function.main);
+        , .{
+            ProtoId{ .i = @intCast(id) },
+            proto.is_extern,
+            proto.is_va_args,
+            proto.decl_block,
+        });
+    }
+    for (self.functions.items, 0..) |func, id| {
         std.debug.print(
+            \\{f} = function:
+            \\    proto {f}
+            \\    entry_block {f}
             \\
-        , .{});
+        , .{
+            FunctionId{ .i = @intCast(id) },
+            func.proto,
+            func.entry_block,
+        });
     }
 }
 
@@ -294,87 +383,73 @@ fn dumpBlock(
     self: *@This(),
     block: Block,
 ) void {
-    for (block.instructions.start.@"0"..block.instructions.end.@"0") |instr_i| {
-        self.dumpInstr(self.instr.get(instr_i));
+    for (block.instructions.start.i..block.instructions.end.i) |instr_i| {
+        dumpInstr(self.instrs.items[instr_i]);
     }
-    std.debug.print("    @return({f})\n", .{
-        block.branch.@"return",
-    });
+    switch (block.branch_instruction) {
+        .conditional => |v| {
+            std.debug.print("    if {f} {f} else {f}\n", .{ v.boolean, v.on_true, v.on_false });
+        },
+        .unconditional => |v| {
+            std.debug.print("    jump {f}\n", .{v});
+        },
+        .ret => |reg| {
+            std.debug.print("    return {f}\n", .{reg});
+        },
+        .end => {
+            std.debug.print("    decl_fn_end\n", .{});
+        },
+    }
 }
 
 fn dumpInstr(
-    self: *@This(),
     instr: Instr,
 ) void {
     switch (instr) {
-        .let => |v| {
-            std.debug.print("    @let{s}({f}, {s})\n", .{
-                if (v.mut) "_mut" else "",
-                v.value,
-                v.ident.read(self.parser.tokenizer.source),
-            });
-        },
-        .let_param => |v| {
-            std.debug.print("    @let{s}_param({f}, {s})\n", .{
-                if (v.mut) "_mut" else "",
-                v.value,
-                v.ident.read(self.parser.tokenizer.source),
-            });
-        },
-        .get_field => |v| {
-            std.debug.print("    {f} = @get_field({f}, {})\n", .{
-                v.result,
-                v.container,
-                v.field_idx,
-            });
-        },
-
         .str_lit => |v| {
-            std.debug.print("    {f} = {s}\n", .{
-                v.result,
-                v.value.read(self.parser.tokenizer.source),
-            });
+            std.debug.print("    {f} = {s}\n", .{ v.result, v.value });
         },
         .int_lit => |v| {
-            std.debug.print("    {f} = {}\n", .{
-                v.result,
-                v.value,
-            });
+            std.debug.print("    {f} = {}\n", .{ v.result, v.value });
         },
         .float_lit => |v| {
-            std.debug.print("    {f} = {}\n", .{
-                v.result,
-                v.value,
-            });
+            std.debug.print("    {f} = {}\n", .{ v.result, v.value });
         },
         .void_lit => |v| {
-            std.debug.print("    {f} = {{}}\n", .{
-                v.result,
-            });
+            std.debug.print("    {f} = {{}}\n", .{v.result});
         },
-        .type_lit => |v| {
-            std.debug.print("    {f} = <{t}>\n", .{
-                v.result,
-                v.value,
-            });
+        .builtin_lit => |v| {
+            std.debug.print("    {f} = {t}\n", .{ v.result, v.builtin });
         },
-
-        .call_arg => |v| {
-            std.debug.print("    @call_arg({f})\n", .{
-                v.value,
-            });
+        .call => |v| {
+            std.debug.print("    {f} = call {f}\n", .{ v.result, v.func });
         },
-        .call_finish => |v| {
-            std.debug.print("    {f} = @call_finish({f})\n", .{
-                v.result,
-                v.func,
-            });
+        .unary_op => |v| {
+            std.debug.print("    {f} = {f} {f}\n", .{ v.result, v.op, v.value });
         },
-        .call_finish_builtin => |v| {
-            std.debug.print("    {f} = @call_finish_builtin({s})\n", .{
-                v.result,
-                @tagName(v.func),
-            });
+        .binary_op => |v| {
+            std.debug.print("    {f} = {f} {f} {f}\n", .{ v.result, v.lhs, v.op, v.rhs });
+        },
+        .arg_fetch => |v| {
+            std.debug.print("    {f} = arg_fetch\n", .{v.result});
+        },
+        .assign => |v| {
+            std.debug.print("    {f} = {f}\n", .{ v.target, v.value });
+        },
+        .decl_fn => |v| {
+            std.debug.print("    {f} = decl_fn {f}\n", .{ v.result, v.func });
+        },
+        .decl_proto => |v| {
+            std.debug.print("    {f} = decl_proto {f}\n", .{ v.result, v.proto });
+        },
+        .decl_param => |v| {
+            std.debug.print("    decl_param {f}\n", .{v.ty});
+        },
+        .decl_return => |v| {
+            std.debug.print("    decl_return {f}\n", .{v.ty});
+        },
+        .decl_arg => |v| {
+            std.debug.print("    decl_arg {f}\n", .{v.value});
         },
     }
 }
@@ -383,10 +458,12 @@ pub fn convertStructContents(
     self: *@This(),
     alloc: std.mem.Allocator,
     name_hint: *const NameHint,
-    struct_contents: @FieldType(Node, "struct_contents"),
+    node_id: NodeId,
 ) Error!void {
+    const struct_contents = self.nodes()[node_id].struct_contents;
+
     for (struct_contents.decls.start..struct_contents.decls.end) |i| {
-        try self.convertGlobalDecl(
+        try self.convertDecl(
             alloc,
             name_hint,
             @intCast(i),
@@ -394,14 +471,15 @@ pub fn convertStructContents(
     }
 }
 
-pub fn convertGlobalDecl(
+pub fn convertDecl(
     self: *@This(),
     alloc: std.mem.Allocator,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
     const decl = self.nodes()[node_id].decl;
-    const next_name_hint = name_hint.push(decl.ident.read(self.source()));
+    const name = decl.ident.read(self.source());
+    const next_name_hint = name_hint.push(name);
 
     if (decl.type_hint) |type_hint| {
         _ = type_hint;
@@ -412,167 +490,17 @@ pub fn convertGlobalDecl(
         // }, type_hint);
     }
 
-    try self.builder.pushBlock(alloc);
-
-    const name = decl.ident.read(self.parser.tokenizer.source);
-    const local_val = try self.convertExpr(
+    const result = try self.convertExpr(
         alloc,
         &next_name_hint,
         decl.expr,
     );
 
-    const block = try self.builder.popBlock(alloc, &self.instr);
-    const global_val: RegId = .{ .idx = @intCast(self.globals.items.len), .kind = .global };
-    try self.globals.append(alloc, .{
-        .symbol = try next_name_hint.generate(alloc),
-        .block = .{
-            .instructions = block,
-            .branch = .{ .@"return" = local_val },
-        },
-    });
-
-    try self.symbols.set(alloc, name, global_val);
-}
-
-pub fn convertLocalDecl(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-) Error!void {
-    const decl = self.nodes()[node_id].decl;
-    const next_name_hint = name_hint.push(decl.ident.read(self.source()));
-
-    if (decl.type_hint) |type_hint| {
-        _ = type_hint;
-        @panic("todo");
-        // const type_hint = try self.convertExpr(alloc, &.{
-        //     .prev = name_hint,
-        //     .part = decl.ident.read(self.parser.tokenizer.source),
-        // }, type_hint);
-    }
-
-    const name = decl.ident.read(self.parser.tokenizer.source);
-    const val = try self.convertExpr(
+    try self.registers.renameReg(
         alloc,
-        &next_name_hint,
-        decl.expr,
+        result,
+        name,
     );
-
-    try self.symbols.set(alloc, name, val);
-}
-
-pub fn convertFn(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-) Error!RegId {
-    const func = self.nodes()[node_id].@"fn";
-    const proto = self.nodes()[func.proto].proto;
-    if (proto.@"extern") @panic("todo");
-
-    try self.symbols.push(alloc);
-    defer self.symbols.pop(alloc);
-
-    const fn_ptr_val = self.pushFunction();
-    defer self.popFunction(fn_ptr_val);
-
-    const prototype = try self.convertProtoBare(alloc, name_hint, func.proto);
-    const function = try self.convertFnBare(alloc, name_hint, node_id, prototype);
-
-    const func_idx = self.functions.len;
-    try self.functions.append(alloc, function);
-
-    return RegId{
-        .idx = @intCast(func_idx),
-        .kind = .func,
-    };
-}
-
-fn convertFnBare(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-    prototype: Prototype,
-) Error!Function {
-    const func = self.nodes()[node_id].@"fn";
-
-    try self.builder.pushBlock(alloc);
-
-    const scope = try self.convertScope(alloc, name_hint, func.scope_or_symexpr);
-
-    // TODO: scope should build the block
-    const main_block = try self.builder.popBlock(alloc, &self.instr);
-    return .{
-        .symbol = try name_hint.generate(alloc),
-        .meta = prototype.meta,
-        .main = .{
-            .instructions = main_block,
-            .branch = .{ .@"return" = scope },
-        },
-    };
-}
-
-pub fn convertProto(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-) Error!Prototype {
-    const proto = self.nodes()[node_id].proto;
-
-    try self.symbols.push(alloc);
-    defer self.symbols.pop(alloc);
-
-    const fn_ptr_val = self.pushFunction();
-    defer self.popFunction(fn_ptr_val);
-
-    return try self.convertProtoBare(alloc, name_hint, proto);
-}
-
-fn convertProtoBare(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-) Error!Prototype {
-    const proto = self.nodes()[node_id].proto;
-
-    try self.builder.pushBlock(alloc);
-
-    for (proto.params.start..proto.params.end) |i| {
-        const param = self.nodes()[i].param;
-        const param_name = param.ident.read(self.parser.tokenizer.source);
-        const param_type = try self.convertExpr(alloc, name_hint, param.type);
-
-        try self.builder.pushOne(alloc, .{ .let_param = .{
-            .ident = param.ident,
-            .mut = true,
-            .value = param_type,
-        } });
-
-        try self.symbols.set(alloc, param_name, param_type);
-    }
-
-    const return_ty = if (proto.return_ty_expr) |i| b: {
-        break :b try self.convertExpr(alloc, name_hint, i);
-    } else b: {
-        const result = self.local.next();
-        try self.builder.pushOne(alloc, .{ .void_lit = .{
-            .result = result,
-        } });
-        break :b result;
-    };
-
-    const meta_block = try self.builder.popBlock(alloc, &self.instr);
-    return .{
-        .meta = .{
-            .instructions = meta_block,
-            .branch = .{ .@"return" = return_ty },
-        },
-    };
 }
 
 pub fn convertExpr(
@@ -582,142 +510,14 @@ pub fn convertExpr(
     node_id: NodeId,
 ) Error!RegId {
     switch (self.nodes()[node_id]) {
-        .array => @panic("todo"),
-        .slice => @panic("todo"),
-        .pointer => @panic("todo"),
-        .binary_op => |v| {
-            const lhs = try self.convertExpr(alloc, name_hint, v.lhs);
-            const rhs = try self.convertExpr(alloc, name_hint, v.rhs);
-
-            try self.builder.pushPrepare(alloc, 3);
-            const result = self.local.next();
-            self.builder.push(.{ .call_arg = .{
-                .value = lhs,
-            } });
-            self.builder.push(.{ .call_arg = .{
-                .value = rhs,
-            } });
-            self.builder.push(.{ .call_finish_builtin = .{
-                .result = result,
-                .func = switch (v.op) {
-                    inline else => |op| @field(BuiltinFunc, @tagName(op)),
-                },
-            } });
-
-            return result;
-        },
-        .unary_op => |v| {
-            const val = try self.convertExpr(alloc, name_hint, v.val);
-
-            try self.builder.pushPrepare(alloc, 2);
-            const result = self.local.next();
-            self.builder.push(.{ .call_arg = .{
-                .value = val,
-            } });
-            self.builder.push(.{ .call_finish_builtin = .{
-                .result = result,
-                .func = switch (v.op) {
-                    inline else => |op| @field(BuiltinFunc, @tagName(op)),
-                },
-            } });
-
-            return result;
-        },
-        .call => |v| {
-            const func = try self.convertExpr(alloc, name_hint, v.val);
-
-            const arg_regs = try alloc.alloc(RegId, v.args.len());
-            defer alloc.free(arg_regs);
-
-            for (arg_regs, v.args.start..v.args.end) |*arg, i| {
-                arg.* = try self.convertExpr(alloc, name_hint, @intCast(i));
-            }
-
-            const result = self.local.next();
-            try self.builder.pushPrepare(alloc, @intCast(v.args.len() + 1));
-            for (arg_regs) |arg| {
-                self.builder.push(.{ .call_arg = .{
-                    .value = arg,
-                } });
-            }
-            self.builder.push(.{ .call_finish = .{
-                .result = result,
-                .func = func,
-            } });
-
-            return result;
-        },
-        .field_acc => {
-            // const container = try self.convertExpr(alloc, name_hint, v.val);
-
-            // self.instr.append(alloc, .{ .get_field = .{
-            //     .container = container,
-            //     // .field_idx = ,
-            // } });
-
-            @panic("todo");
-        },
-        .index_acc => {
-            @panic("todo");
-        },
-        .str_lit => |v| {
-            var value = v.tok;
-            value.start += 1;
-            value.end -= 1;
-
-            const result = self.local.next();
-            try self.builder.pushOne(alloc, .{ .str_lit = .{
-                .result = result,
-                .value = value,
-            } });
-            return result;
-        },
-        .char_lit => |v| {
-            const result = self.local.next();
-            try self.builder.pushOne(alloc, .{ .int_lit = .{
-                .result = result,
-                .value = v.val,
-            } });
-            return result;
-        },
-        .float_lit => |v| {
-            const result = self.local.next();
-            try self.builder.pushOne(alloc, .{ .float_lit = .{
-                .result = result,
-                .value = v.val,
-            } });
-            return result;
-        },
-        .int_lit => |v| {
-            const result = self.local.next();
-            try self.builder.pushOne(alloc, .{ .int_lit = .{
-                .result = result,
-                .value = v.val,
-            } });
-            return result;
-        },
-        .access => |v| {
-            const sym = v.ident.read(self.parser.tokenizer.source);
-
-            if (self.symbols.get(sym)) |found| {
-                return found;
-            }
-
-            if (std.meta.stringToEnum(BuiltinType, sym)) |ty| {
-                const result = self.local.next();
-                try self.builder.pushOne(alloc, .{ .type_lit = .{
-                    .result = result,
-                    .value = ty,
-                } });
-                return result;
-            }
-
-            std.debug.print("unknown symbol: {s}\n", .{sym});
-            return error.UnknownSymbol;
-        },
-        .scope => return try self.convertScope(
+        .@"if" => return try self.convertIf(
             alloc,
-            &name_hint.push("<scope>"),
+            name_hint,
+            node_id,
+        ),
+        .proto => return try self.convertProto(
+            alloc,
+            name_hint,
             node_id,
         ),
         .@"fn" => return try self.convertFn(
@@ -725,8 +525,304 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
+        .slice => return try self.convertSlice(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .pointer => return try self.convertPointer(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .binary_op => return try self.convertBinaryOp(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .field_acc => return try self.convertFieldAcc(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .call => return try self.convertCall(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .access => |acc| return try self.convertAccess(
+            alloc,
+            acc.ident.read(self.source()),
+        ),
+        .str_lit => |lit| return try self.convertStrLit(
+            alloc,
+            lit.tok.read(self.source()),
+        ),
+        .float_lit => |lit| return try self.convertFloatLit(
+            alloc,
+            lit.val,
+        ),
+        .int_lit => |lit| return try self.convertIntLit(
+            alloc,
+            lit.val,
+        ),
         else => std.debug.panic("TODO: {}", .{self.nodes()[node_id]}),
     }
+}
+
+pub fn convertAssign(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const assign = self.nodes()[node_id].assign;
+
+    const target = try self.convertExpr(
+        alloc,
+        name_hint,
+        assign.lhs,
+    );
+
+    const value = try self.convertExpr(
+        alloc,
+        name_hint,
+        assign.rhs,
+    );
+
+    try self.builder.pushInstr(alloc, .{ .assign = .{
+        .target = target,
+        .value = value,
+    } });
+}
+
+pub fn convertIf(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const @"if" = self.nodes()[node_id].@"if";
+
+    const boolean = try self.convertExpr(
+        alloc,
+        name_hint,
+        @"if".check_expr,
+    );
+    const result = self.registers.pushTmp();
+
+    const if_entry_block = self.current_block;
+    const continue_block = try self.allocBlock(alloc);
+
+    log.info("if entry: {f}", .{if_entry_block});
+    log.info("continue: {f}", .{continue_block});
+
+    const on_true_block = try self.pushBlock(alloc);
+    log.info("on true: {f}", .{on_true_block});
+    const on_true_value = try self.convertScope(
+        alloc,
+        name_hint,
+        @"if".on_true_scope,
+    );
+    try self.builder.pushInstr(alloc, .{ .assign = .{
+        .target = result,
+        .value = on_true_value,
+    } });
+    try self.popBlock(
+        alloc,
+        .{ .unconditional = continue_block },
+        null,
+    );
+
+    const on_false_block = try self.pushBlock(alloc);
+    log.info("on false: {f}", .{on_false_block});
+    const on_false_value = try self.convertScope(
+        alloc,
+        name_hint,
+        @"if".on_false_scope,
+    );
+    try self.builder.pushInstr(alloc, .{ .assign = .{
+        .target = result,
+        .value = on_false_value,
+    } });
+    try self.popBlock(
+        alloc,
+        .{ .unconditional = continue_block },
+        null,
+    );
+
+    try self.popBlock(
+        alloc,
+        .{ .conditional = .{
+            .boolean = boolean,
+            .on_true = on_true_block,
+            .on_false = on_false_block,
+        } },
+        if_entry_block,
+    );
+
+    try self.builder.pushBlock(alloc);
+    self.current_block = continue_block;
+
+    return result;
+}
+
+pub fn convertProtoId(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!ProtoId {
+    const proto = self.nodes()[node_id].proto;
+
+    const proto_id = try self.allocProto(alloc);
+
+    const prev_block = self.current_block;
+    const decl_block = try self.pushBlock(alloc);
+    try self.pushScope(alloc);
+
+    try self.param_stack.ensureUnusedCapacity(alloc, proto.params.len());
+    const param_type_regs = self.param_stack.addManyAsSliceAssumeCapacity(proto.params.len());
+
+    const name_hint_proto = name_hint.push("proto");
+    const name_hint_param = name_hint_proto.push("param");
+    for (proto.params.start..proto.params.end, param_type_regs) |param_node_id, *param_type_reg| {
+        const param = self.nodes()[param_node_id].param;
+        const param_name = param.ident.read(self.source());
+        param_type_reg.* = try self.convertExpr(
+            alloc,
+            &name_hint_param.push(param_name),
+            param.type,
+        );
+    }
+
+    const name_hint_ret = name_hint_proto.push("ret");
+    const return_type = if (proto.return_ty_expr) |expr_node_id|
+        try self.convertExpr(
+            alloc,
+            &name_hint_ret,
+            expr_node_id,
+        )
+    else
+        try self.convertVoidLit(alloc);
+
+    for (param_type_regs) |param_type| {
+        try self.builder.pushInstr(alloc, .{
+            .decl_param = .{ .ty = param_type },
+        });
+    }
+    try self.builder.pushInstr(alloc, .{
+        .decl_return = .{ .ty = return_type },
+    });
+
+    self.popScope();
+    try self.popBlock(alloc, .end, null);
+    self.current_block = prev_block;
+
+    self.protos.items[proto_id.i] = Proto{
+        .decl_block = decl_block,
+        .is_extern = proto.@"extern",
+        .is_va_args = proto.is_va_args,
+    };
+
+    return proto_id;
+}
+
+pub fn convertFnId(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!FunctionId {
+    const func = self.nodes()[node_id].@"fn";
+    const proto = self.nodes()[func.proto].proto;
+    const proto_id = try self.convertProtoId(alloc, name_hint, func.proto);
+
+    const fn_id = try self.allocFunction(alloc);
+
+    const prev_block = self.current_block;
+    const entry_block = try self.pushBlock(alloc);
+    try self.pushScope(alloc);
+
+    var return_value: RegId = undefined;
+    if (proto.@"extern") {
+        const name_hint_symexpr = name_hint.push("symexpr");
+        return_value = try self.convertExpr(
+            alloc,
+            &name_hint_symexpr,
+            func.scope_or_symexpr,
+        );
+    } else {
+        for (proto.params.start..proto.params.end) |param_node_id| {
+            const param = self.nodes()[param_node_id].param;
+            const param_name = param.ident.read(self.source());
+
+            const result = self.registers.pushTmp();
+            try self.registers.renameReg(alloc, result, param_name);
+            try self.builder.pushInstr(alloc, .{ .arg_fetch = .{
+                .result = result,
+            } });
+        }
+
+        const name_hint_fn = name_hint.push("fn");
+        return_value = try self.convertScope(
+            alloc,
+            &name_hint_fn,
+            func.scope_or_symexpr,
+        );
+    }
+
+    self.popScope();
+    try self.popBlock(alloc, .{ .ret = return_value }, null);
+    self.current_block = prev_block;
+
+    self.functions.items[fn_id.i] = Function{
+        .proto = proto_id,
+        .entry_block = entry_block,
+        // .parent = ,
+    };
+
+    return fn_id;
+}
+
+pub fn convertProto(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    const proto_id = try self.convertProtoId(
+        alloc,
+        name_hint,
+        node_id,
+    );
+
+    try self.builder.pushInstr(alloc, .{ .decl_proto = .{
+        .result = result,
+        .proto = proto_id,
+    } });
+    return result;
+}
+
+pub fn convertFn(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    const func_id = try self.convertFnId(
+        alloc,
+        name_hint,
+        node_id,
+    );
+
+    try self.builder.pushInstr(alloc, .{ .decl_fn = .{
+        .result = result,
+        .func = func_id,
+    } });
+    return result;
 }
 
 pub fn convertScope(
@@ -735,33 +831,36 @@ pub fn convertScope(
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!RegId {
-    try self.symbols.push(alloc);
-    defer self.symbols.pop(alloc);
-
     const scope = self.nodes()[node_id].scope;
 
-    const stmts, const result_expr = scope.stmts.splitLast() orelse {
-        const result = self.local.next();
-        try self.builder.pushOne(alloc, .{ .void_lit = .{
-            .result = result,
-        } });
-        return result;
+    const stmts, const last_stmt = scope.stmts.splitLast() orelse {
+        return try self.convertVoidLit(alloc);
     };
 
-    for (stmts.start..stmts.end) |i| {
-        try self.convertStmt(alloc, name_hint, @intCast(i));
+    try self.pushScope(alloc);
+    defer self.popScope();
+
+    for (stmts.start..stmts.end) |stmt| {
+        _ = try self.convertStmt(
+            alloc,
+            name_hint,
+            @intCast(stmt),
+        );
     }
 
     if (scope.has_trailing_semi) {
-        return try self.convertExpr(alloc, name_hint, result_expr);
+        _ = try self.convertStmt(
+            alloc,
+            name_hint,
+            last_stmt,
+        );
+        return try self.convertVoidLit(alloc);
     } else {
-        try self.convertStmt(alloc, name_hint, result_expr);
-
-        const result = self.local.next();
-        try self.builder.pushOne(alloc, .{ .void_lit = .{
-            .result = result,
-        } });
-        return result;
+        return try self.convertExpr(
+            alloc,
+            name_hint,
+            last_stmt,
+        );
     }
 }
 
@@ -772,162 +871,398 @@ pub fn convertStmt(
     node_id: NodeId,
 ) Error!void {
     switch (self.nodes()[node_id]) {
-        .decl => {
-            try self.convertLocalDecl(
-                alloc,
-                name_hint,
-                node_id,
-            );
-        },
-        else => {
-            _ = try self.convertExpr(
-                alloc,
-                name_hint,
-                node_id,
-            );
-        },
+        .decl => try self.convertDecl(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .assign => try self.convertAssign(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        else => _ = try self.convertExpr(
+            alloc,
+            name_hint,
+            node_id,
+        ),
     }
 }
 
-pub const Symbols = struct {
-    scopes: std.ArrayList(std.StringArrayHashMapUnmanaged(RegId)) = .{},
+pub fn convertSlice(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const slice = self.nodes()[node_id].slice;
+
+    const elements = try self.convertExpr(
+        alloc,
+        name_hint,
+        slice.elements_expr,
+    );
+
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .unary_op = .{
+        .result = result,
+        .value = elements,
+        .op = if (slice.mut) .slice_mut else .slice,
+    } });
+    return result;
+}
+
+pub fn convertPointer(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const pointer = self.nodes()[node_id].pointer;
+
+    const elements = try self.convertExpr(
+        alloc,
+        name_hint,
+        pointer.pointee_expr,
+    );
+
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .unary_op = .{
+        .result = result,
+        .value = elements,
+        .op = if (pointer.mut) .pointer_mut else .pointer,
+    } });
+    return result;
+}
+
+pub fn convertBinaryOp(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const binary_op = self.nodes()[node_id].binary_op;
+
+    const lhs = try self.convertExpr(
+        alloc,
+        name_hint,
+        binary_op.lhs,
+    );
+
+    const rhs = try self.convertExpr(
+        alloc,
+        name_hint,
+        binary_op.rhs,
+    );
+
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .binary_op = .{
+        .result = result,
+        .lhs = lhs,
+        .rhs = rhs,
+        .op = binary_op.op,
+    } });
+    return result;
+}
+
+pub fn convertFieldAcc(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const field_acc = self.nodes()[node_id].field_acc;
+
+    const container = try self.convertExpr(
+        alloc,
+        name_hint,
+        field_acc.val,
+    );
+
+    const field = try self.convertStrLit(
+        alloc,
+        field_acc.ident.read(self.source()),
+    );
+
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .binary_op = .{
+        .result = result,
+        .lhs = container,
+        .rhs = field,
+        .op = BinaryOp.field,
+    } });
+    return result;
+}
+
+pub fn convertCall(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!RegId {
+    const call = self.nodes()[node_id].call;
+
+    for (call.args.start..call.args.end) |expr_node_id| {
+        const arg = try self.convertExpr(
+            alloc,
+            name_hint,
+            @intCast(expr_node_id),
+        );
+
+        try self.builder.pushInstr(alloc, .{ .decl_arg = .{
+            .value = arg,
+        } });
+    }
+
+    const func = try self.convertExpr(
+        alloc,
+        name_hint,
+        call.val,
+    );
+
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .call = .{
+        .result = result,
+        .func = func,
+    } });
+    return result;
+}
+
+pub fn convertAccess(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    var_name: []const u8,
+) Error!RegId {
+    // if (std.mem.eql(u8, "_", var_name)) {
+    //     const result = self.registers.pushTmp();
+    //     //
+    //     return result;
+    // }
+
+    if (std.meta.stringToEnum(BuiltinVariable, var_name)) |builtin| {
+        const result = self.registers.pushTmp();
+        try self.builder.pushInstr(alloc, .{ .builtin_lit = .{
+            .result = result,
+            .builtin = builtin,
+        } });
+        return result;
+    }
+
+    const result = self.registers.findVar(var_name) orelse {
+        log.debug("variable not found: {s}", .{var_name});
+        return Error.VariableNotFound;
+    };
+    return result;
+}
+
+pub fn convertStrLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: []const u8,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .str_lit = .{
+        .result = result,
+        .value = value,
+    } });
+    return result;
+}
+
+pub fn convertFloatLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: f64,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .float_lit = .{
+        .result = result,
+        .value = value,
+    } });
+    return result;
+}
+
+pub fn convertIntLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: u128,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .int_lit = .{
+        .result = result,
+        .value = value,
+    } });
+    return result;
+}
+
+pub fn convertVoidLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!RegId {
+    const result = self.registers.pushTmp();
+    try self.builder.pushInstr(alloc, .{ .void_lit = .{
+        .result = result,
+    } });
+    return result;
+}
+
+pub const Registers = struct {
+    var_name_hashmap: std.StringHashMapUnmanaged(ShadowChainEntry) = .{},
+    shadow_chain: std.ArrayList(ShadowChainEntry) = .{},
+    reg_names: std.AutoHashMapUnmanaged(RegId, []const u8) = .{},
+
+    scope_reg_counters: std.ArrayList(u32) = .{},
+    top_scope_reg_counter: u32 = 0,
+
+    largest_reg: RegId = .{ .i = 0 },
+
+    const null_reg: RegId = .{0};
+
+    const ShadowChainEntry = struct {
+        prev: u32,
+        this: RegId,
+    };
 
     pub fn deinit(
         self: *@This(),
         alloc: std.mem.Allocator,
     ) void {
-        for (self.scopes.items) |*scope|
-            scope.deinit(alloc);
-        self.scopes.deinit(alloc);
+        self.scope_reg_counters.deinit(alloc);
+
+        self.reg_names.deinit(alloc);
+        self.shadow_chain.deinit(alloc);
+        self.var_name_hashmap.deinit(alloc);
     }
 
-    pub fn set(
+    pub fn pushTmp(self: *@This()) RegId {
+        const reg: RegId = .{ .i = self.top_scope_reg_counter };
+        self.top_scope_reg_counter += 1;
+        self.largest_reg.i = @max(self.largest_reg.i, reg.i);
+        return reg;
+    }
+
+    pub fn renameReg(
         self: *@This(),
         alloc: std.mem.Allocator,
+        reg: RegId,
         var_name: []const u8,
-        val: RegId,
     ) Error!void {
-        std.debug.assert(self.scopes.items.len != 0);
+        try self.var_name_hashmap.ensureUnusedCapacity(alloc, 1);
+        try self.shadow_chain.ensureUnusedCapacity(alloc, 1);
+        try self.reg_names.ensureUnusedCapacity(alloc, 1);
 
-        const scope = &self.scopes.items[self.scopes.items.len - 1];
-        try scope.put(alloc, var_name, val);
+        self.reg_names.putAssumeCapacity(reg, var_name);
+        const lookup_entry = self.var_name_hashmap.getOrPutAssumeCapacity(var_name);
+        if (lookup_entry.found_existing) {
+            const prev: u32 = @intCast(self.shadow_chain.items.len);
+            self.shadow_chain.appendAssumeCapacity(lookup_entry.value_ptr.*);
+            lookup_entry.value_ptr.* = .{
+                .prev = prev,
+                .this = reg,
+            };
+        } else {
+            lookup_entry.value_ptr.* = .{
+                .prev = std.math.maxInt(u32),
+                .this = reg,
+            };
+        }
     }
 
-    pub fn get(
+    pub fn findVar(
         self: *@This(),
         var_name: []const u8,
     ) ?RegId {
-        std.debug.assert(self.scopes.items.len != 0);
-
-        var it = std.mem.reverseIterator(self.scopes.items);
-        while (it.next()) |scope| {
-            if (scope.get(var_name)) |ty| {
-                return ty;
-            }
-        }
-        return null;
+        const entry = self.var_name_hashmap.get(var_name) orelse return null;
+        return entry.this;
     }
 
-    pub fn push(
+    pub fn popVar(
+        self: *@This(),
+        var_name: []const u8,
+    ) void {
+        const lookup_entry = self.var_name_hashmap.getPtr(var_name) orelse return;
+
+        if (lookup_entry.prev != std.math.maxInt(u32)) {
+            lookup_entry.* = self.shadow_chain.items[lookup_entry.prev];
+            self.shadow_chain.items[lookup_entry.prev] = undefined;
+        } else {
+            std.debug.assert(self.var_name_hashmap.remove(var_name));
+        }
+    }
+
+    pub fn pushScope(
         self: *@This(),
         alloc: std.mem.Allocator,
     ) Error!void {
-        try self.scopes.append(alloc, .{});
+        try self.scope_reg_counters.append(alloc, self.top_scope_reg_counter);
     }
 
-    pub fn pop(
+    pub fn popScope(
         self: *@This(),
-        alloc: std.mem.Allocator,
     ) void {
-        var scope = self.scopes.pop().?;
-        scope.deinit(alloc);
+        const new_reg_counter = self.scope_reg_counters.pop() orelse 0;
+        const score_reg_count = self.top_scope_reg_counter - new_reg_counter;
+        self.top_scope_reg_counter = new_reg_counter;
+
+        for (new_reg_counter..new_reg_counter + score_reg_count) |reg_id| {
+            const reg: RegId = .{ .i = @intCast(reg_id) };
+            const reg_name = (self.reg_names.fetchRemove(reg) orelse continue).value;
+            self.popVar(reg_name);
+        }
     }
 };
 
 pub const Builder = struct {
-    scopes: std.ArrayList(std.MultiArrayList(Instr)) = .{},
-    top: usize = 0,
+    instrs: std.ArrayList(Instr) = .{},
+    block_instr_counts: std.ArrayList(u32) = .{},
+    top_block_instr_count: u32 = 0,
 
     pub fn deinit(
         self: *@This(),
         alloc: std.mem.Allocator,
     ) void {
-        for (self.scopes.items) |*scope|
-            scope.deinit(alloc);
-        self.scopes.deinit(alloc);
+        self.block_instr_counts.deinit(alloc);
+        self.instrs.deinit(alloc);
     }
 
-    fn lazyinit(
+    pub fn pushInstr(
         self: *@This(),
         alloc: std.mem.Allocator,
+        instr: Instr,
     ) Error!void {
-        if (self.scopes.items.len == 0) {
-            @branchHint(.cold);
-
-            // global scope, always there
-            try self.scopes.append(alloc, .{});
-        }
-    }
-
-    fn topScope(
-        self: *@This(),
-    ) *std.MultiArrayList(Instr) {
-        return &self.scopes.items[self.top];
-    }
-
-    pub fn pushPrepare(
-        self: *@This(),
-        alloc: std.mem.Allocator,
-        n: usize,
-    ) Error!void {
-        try self.lazyinit(alloc);
-        try self.topScope().ensureUnusedCapacity(alloc, n);
-    }
-
-    pub fn push(
-        self: *@This(),
-        insrt: Instr,
-    ) void {
-        self.topScope().appendAssumeCapacity(insrt);
-    }
-
-    pub fn pushOne(
-        self: *@This(),
-        alloc: std.mem.Allocator,
-        insrt: Instr,
-    ) Error!void {
-        try self.lazyinit(alloc);
-        try self.topScope().append(alloc, insrt);
+        try self.instrs.append(alloc, instr);
+        self.top_block_instr_count += 1;
     }
 
     pub fn pushBlock(
         self: *@This(),
         alloc: std.mem.Allocator,
     ) Error!void {
-        try self.lazyinit(alloc);
-        self.top += 1;
-        try self.scopes.append(alloc, .{});
+        try self.block_instr_counts.append(alloc, self.top_block_instr_count);
+        self.top_block_instr_count = 0;
     }
 
     pub fn popBlock(
         self: *@This(),
         alloc: std.mem.Allocator,
-        output: *std.MultiArrayList(Instr),
-    ) Error!InstrRange {
-        const top_scope = self.topScope();
+        instrs_output: *std.ArrayList(Instr),
+        branch_instr: BranchInstr,
+    ) Error!Block {
+        const instrs = self.top_block_instr_count;
+        self.top_block_instr_count = self.block_instr_counts.pop() orelse 0;
 
         const instr: InstrRange = .{
-            .start = .{@intCast(output.len)},
-            .end = .{@intCast(output.len + top_scope.len)},
+            .start = .{ .i = @intCast(instrs_output.items.len) },
+            .end = .{ .i = @intCast(instrs_output.items.len + instrs) },
         };
-        try output.ensureUnusedCapacity(alloc, top_scope.len);
-        for (0..top_scope.len) |i| {
-            output.appendAssumeCapacity(top_scope.get(i));
-        }
+        const instrs_dst = try instrs_output.addManyAsSlice(alloc, instrs);
+        const instrs_src = self.instrs.items[self.instrs.items.len - instrs ..];
 
-        top_scope.clearRetainingCapacity();
-        self.top -= 1;
+        @memcpy(instrs_dst, instrs_src);
+        self.instrs.items.len -= instrs;
 
-        return instr;
+        return Block{
+            .instructions = instr,
+            .branch_instruction = branch_instr,
+        };
     }
 };

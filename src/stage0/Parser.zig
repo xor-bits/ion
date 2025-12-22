@@ -56,6 +56,16 @@ pub const Node = union(enum) {
         rhs: NodeId,
         // semi: Span,
     },
+    proto: struct {
+        @"extern": bool,
+        // @"fn": Span,
+        // lparen: Span,
+        params: NodeRange,
+        is_va_args: bool,
+        // rparen: Span,
+        // colon: Span,
+        return_ty_expr: ?NodeId,
+    },
     @"fn": struct {
         proto: NodeId,
         scope_or_symexpr: NodeId,
@@ -78,6 +88,7 @@ pub const Node = union(enum) {
         // rbracket: Span,
         elements_expr: NodeId,
     },
+    // TODO: pratt parsing + make these (slice, pointer, etc.) into unary ops
     slice: struct {
         // lbracket: Span,
         // rbracket: Span,
@@ -115,16 +126,6 @@ pub const Node = union(enum) {
     access: struct {
         ident: Span,
     },
-    proto: struct {
-        @"extern": bool,
-        // @"fn": Span,
-        // lparen: Span,
-        params: NodeRange,
-        is_va_args: bool,
-        // rparen: Span,
-        // colon: Span,
-        return_ty_expr: ?NodeId,
-    },
     str_lit: struct {
         tok: Span,
     },
@@ -156,11 +157,48 @@ pub const BinaryOp = enum {
     le,
     gt,
     ge,
+
+    field,
+
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("{s}", .{switch (self.*) {
+            .add => "+",
+            .sub => "-",
+            .mul => "*",
+            .div => "/",
+            .rem => "%",
+            .as => "as",
+
+            .eq => "==",
+            .neq => "!=",
+            .lt => "<",
+            .le => "<=",
+            .gt => ">",
+            .ge => ">=",
+
+            .field => ".",
+        }});
+    }
 };
 
 pub const UnaryOp = enum {
     neg,
     not,
+    slice,
+    slice_mut,
+    pointer,
+    pointer_mut,
+
+    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        return writer.print("{s}", .{switch (self.*) {
+            .neg => "-",
+            .not => "!",
+            .slice => "[]",
+            .slice_mut => "[]mut",
+            .pointer => "*",
+            .pointer_mut => "*mut",
+        }});
+    }
 };
 
 pub const NodeId = u32;
