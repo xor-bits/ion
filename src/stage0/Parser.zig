@@ -143,6 +143,11 @@ pub const Node = union(enum) {
     },
 };
 
+pub const SpannedNode = struct {
+    node: Node,
+    span: Span,
+};
+
 pub const BinaryOp = enum {
     add,
     sub,
@@ -212,7 +217,9 @@ pub const Error = error{
     EndOfFile,
 };
 
-nodes: std.ArrayListUnmanaged(Node) = .{},
+nodes: std.ArrayList(Node) = .{},
+node_spans: std.ArrayList(Span) = .{},
+// TODO: node_stack: std.ArrayList(Node) = .{},
 tokenizer: *Tokenizer,
 current: u32 = 0,
 
@@ -220,6 +227,7 @@ pub fn deinit(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) void {
+    self.node_spans.deinit(alloc);
     self.nodes.deinit(alloc);
 }
 
@@ -239,20 +247,23 @@ pub fn run(
     try self.nodes.ensureTotalCapacity(alloc, self.tokenizer.source.len / 3);
     self.nodes.clearRetainingCapacity();
 
-    const root = try self.allocNode(alloc, .{ .struct_contents = undefined }); // reserve idx 0 as the ast root
+    const root = try self.allocNode(alloc, undefined); // reserve idx 0 as the ast root
     std.debug.assert(root == 0);
-    self.nodes.items[0] = try self.parseFile(alloc);
+    const root_file = try self.parseFile(alloc);
+    self.nodes.items[0] = root_file.node;
+    self.node_spans.items[0] = root_file.span;
 }
 
 fn allocNode(
     self: *@This(),
     alloc: std.mem.Allocator,
-    node: Node,
+    node: SpannedNode,
 ) Error!NodeId {
     // std.log.debug("alloc node={any}", .{node});
     const id = std.math.cast(u32, self.nodes.items.len) orelse
         return error.TooManyAstNodes;
-    try self.nodes.append(alloc, node);
+    try self.nodes.append(alloc, node.node);
+    try self.node_spans.append(alloc, node.span);
     return id;
 }
 
@@ -260,15 +271,21 @@ fn allocNodes(
     self: *@This(),
     alloc: std.mem.Allocator,
     nodes: []const Node,
+    spans: []const Span,
 ) Error!NodeRange {
+    std.debug.assert(nodes.len == spans.len);
+    const n = nodes.len;
+
     // std.log.debug("alloc nodes={any}", .{nodes});
     const start = std.math.cast(u32, self.nodes.items.len) orelse
         return error.TooManyAstNodes;
-    const end = std.math.cast(u32, self.nodes.items.len + nodes.len) orelse
+    const end = std.math.cast(u32, self.nodes.items.len + n) orelse
         return error.TooManyAstNodes;
 
-    const slot = try self.nodes.addManyAsSlice(alloc, nodes.len);
-    @memcpy(slot, nodes);
+    const nodes_dst = try self.nodes.addManyAsSlice(alloc, n);
+    const spans_dst = try self.node_spans.addManyAsSlice(alloc, n);
+    @memcpy(nodes_dst, nodes);
+    @memcpy(spans_dst, spans);
     return .{ .start = start, .end = end };
 }
 
@@ -344,7 +361,7 @@ fn parseToken(
 fn parseFile(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse file", .{});
     return self.parseStructContents(alloc);
 }
@@ -352,34 +369,62 @@ fn parseFile(
 fn parseStructContents(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse struct contents", .{});
-    var fields: std.ArrayList(Node) = .{};
-    defer fields.deinit(alloc);
-    var decls: std.ArrayList(Node) = .{};
-    defer decls.deinit(alloc);
+    // TODO: use a shared stack instead
+    var field_nodes: std.ArrayList(Node) = .{};
+    defer field_nodes.deinit(alloc);
+    var field_spans: std.ArrayList(Span) = .{};
+    defer field_spans.deinit(alloc);
+    var decl_nodes: std.ArrayList(Node) = .{};
+    defer decl_nodes.deinit(alloc);
+    var decl_spans: std.ArrayList(Span) = .{};
+    defer decl_spans.deinit(alloc);
+
+    var span: Span = Span{};
 
     while (true) {
         const tok = self.peekToken() catch break;
         switch (tok) {
-            .ident => try fields.append(alloc, try self.parseField(alloc)),
-            .let => try decls.append(alloc, try self.parseDecl(alloc)),
+            .ident => {
+                const field = try self.parseField(alloc);
+                try field_nodes.append(alloc, field.node);
+                try field_spans.append(alloc, field.span);
+                span = span.merge(field.span);
+            },
+            .let => {
+                const decl = try self.parseDecl(alloc);
+                try decl_nodes.append(alloc, decl.node);
+                try decl_spans.append(alloc, decl.span);
+                span = span.merge(decl.span);
+            },
             .rbrace => break,
             else => return error.InvalidSyntax,
         }
-        _ = try self.parseToken(.semi);
+        span = span.merge(try self.parseToken(.semi));
     }
 
-    return .{ .struct_contents = .{
-        .fields = try self.allocNodes(alloc, fields.items),
-        .decls = try self.allocNodes(alloc, decls.items),
-    } };
+    return .{
+        .node = .{ .struct_contents = .{
+            .fields = try self.allocNodes(
+                alloc,
+                field_nodes.items,
+                field_spans.items,
+            ),
+            .decls = try self.allocNodes(
+                alloc,
+                decl_nodes.items,
+                decl_spans.items,
+            ),
+        } },
+        .span = span,
+    };
 }
 
 fn parseField(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse field", .{});
     const ident = try self.parseToken(.ident);
     const colon = try self.parseToken(.colon);
@@ -394,22 +439,28 @@ fn parseField(
 
             _ = .{ colon, eq, comma };
 
-            return .{ .field = .{
-                .ident = ident,
-                .type = try self.allocNode(alloc, ty),
-                .default = try self.allocNode(alloc, default),
-            } };
+            return .{
+                .node = .{ .field = .{
+                    .ident = ident,
+                    .type = try self.allocNode(alloc, ty),
+                    .default = try self.allocNode(alloc, default),
+                } },
+                .span = ident.merge(comma),
+            };
         },
         .comma => {
             const comma = try self.parseToken(.comma);
 
             _ = .{ colon, comma };
 
-            return .{ .field = .{
-                .ident = ident,
-                .type = try self.allocNode(alloc, ty),
-                .default = null,
-            } };
+            return .{
+                .node = .{ .field = .{
+                    .ident = ident,
+                    .type = try self.allocNode(alloc, ty),
+                    .default = null,
+                } },
+                .span = ident.merge(comma),
+            };
         },
         else => return error.InvalidSyntax,
     }
@@ -418,7 +469,7 @@ fn parseField(
 fn parseDecl(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse decl", .{});
     const let = try self.parseToken(.let);
     var mut: ?Span = null;
@@ -437,18 +488,21 @@ fn parseDecl(
 
     _ = .{ let, eq };
 
-    return .{ .decl = .{
-        .mut = mut != null,
-        .ident = ident,
-        .type_hint = type_hint,
-        .expr = try self.allocNode(alloc, expr),
-    } };
+    return .{
+        .node = .{ .decl = .{
+            .mut = mut != null,
+            .ident = ident,
+            .type_hint = type_hint,
+            .expr = try self.allocNode(alloc, expr),
+        } },
+        .span = let.merge(expr.span),
+    };
 }
 
 fn parseExpr(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse expr", .{});
     return self.parseComparison(alloc);
 }
@@ -456,8 +510,8 @@ fn parseExpr(
 fn parseSlice(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
-    _ = try self.parseToken(.lbracket);
+) Error!SpannedNode {
+    const lbracket = try self.parseToken(.lbracket);
 
     switch (try self.peekToken()) {
         .rbracket => {
@@ -472,24 +526,30 @@ fn parseSlice(
                 },
                 else => {},
             }
-            const elements = try self.allocNode(alloc, try self.parseExpr(alloc));
+            const elements = try self.parseExpr(alloc);
 
-            return Node{ .slice = .{
-                .elements_expr = elements,
-                .mut = mut,
-            } };
+            return .{
+                .node = .{ .slice = .{
+                    .elements_expr = try self.allocNode(alloc, elements),
+                    .mut = mut,
+                } },
+                .span = lbracket.merge(elements.span),
+            };
         },
         else => {
             // is an array, compile time length
 
-            const length = try self.allocNode(alloc, try self.parseExpr(alloc));
+            const length = try self.parseExpr(alloc);
             _ = try self.parseToken(.rbracket);
-            const elements = try self.allocNode(alloc, try self.parseExpr(alloc));
+            const elements = try self.parseExpr(alloc);
 
-            return Node{ .array = .{
-                .length_expr = length,
-                .elements_expr = elements,
-            } };
+            return .{
+                .node = .{ .array = .{
+                    .length_expr = try self.allocNode(alloc, length),
+                    .elements_expr = try self.allocNode(alloc, elements),
+                } },
+                .span = lbracket.merge(elements.span),
+            };
         },
     }
 }
@@ -497,8 +557,8 @@ fn parseSlice(
 fn parsePointer(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
-    _ = try self.parseToken(.asterisk);
+) Error!SpannedNode {
+    const asterisk = try self.parseToken(.asterisk);
 
     var mut: bool = false;
     switch (try self.peekToken()) {
@@ -508,20 +568,23 @@ fn parsePointer(
         },
         else => {},
     }
-    const pointee = try self.allocNode(alloc, try self.parseExpr(alloc));
+    const pointee = try self.parseExpr(alloc);
 
-    return Node{ .pointer = .{
-        .pointee_expr = pointee,
-        .mut = mut,
-    } };
+    return .{
+        .node = .{ .pointer = .{
+            .pointee_expr = try self.allocNode(alloc, pointee),
+            .mut = mut,
+        } },
+        .span = asterisk.merge(pointee.span),
+    };
 }
 
 fn parseComparison(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse comparison", .{});
-    var lhs = try self.parseAssign(alloc);
+    var lhs: SpannedNode = try self.parseAssign(alloc);
 
     while (true) {
         const op = switch (self.peekToken() catch break) {
@@ -536,12 +599,17 @@ fn parseComparison(
         _ = self.advance();
         const rhs = try self.parseAssign(alloc);
 
-        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-        lhs = .{ .binary_op = .{
-            .lhs = prev,
-            .op = op,
-            .rhs = try self.allocNode(alloc, rhs),
-        } };
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .binary_op = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .op = op,
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
     }
 
     return lhs;
@@ -550,19 +618,24 @@ fn parseComparison(
 fn parseAssign(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse assign", .{});
-    var lhs = try self.parseCast(alloc);
+    var lhs: SpannedNode = try self.parseCast(alloc);
 
     if (try self.peekToken() == .single_eq) {
         _ = self.advance();
         const rhs = try self.parseCast(alloc);
 
-        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-        lhs = .{ .assign = .{
-            .lhs = prev,
-            .rhs = try self.allocNode(alloc, rhs),
-        } };
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .assign = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
     }
 
     return lhs;
@@ -571,9 +644,9 @@ fn parseAssign(
 fn parseCast(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse cast", .{});
-    var lhs = try self.parseSum(alloc);
+    var lhs: SpannedNode = try self.parseSum(alloc);
 
     while (true) {
         const op = switch (try self.peekToken()) {
@@ -583,12 +656,17 @@ fn parseCast(
         _ = self.advance();
         const rhs = try self.parseSum(alloc);
 
-        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-        lhs = .{ .binary_op = .{
-            .lhs = prev,
-            .op = op,
-            .rhs = try self.allocNode(alloc, rhs),
-        } };
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .binary_op = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .op = op,
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
     }
 
     return lhs;
@@ -597,9 +675,9 @@ fn parseCast(
 fn parseSum(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse sum", .{});
-    var lhs = try self.parseProd(alloc);
+    var lhs: SpannedNode = try self.parseProd(alloc);
 
     while (true) {
         const op = switch (try self.peekToken()) {
@@ -611,12 +689,17 @@ fn parseSum(
         _ = self.advance();
         const rhs = try self.parseProd(alloc);
 
-        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-        lhs = .{ .binary_op = .{
-            .lhs = prev,
-            .op = op,
-            .rhs = try self.allocNode(alloc, rhs),
-        } };
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .binary_op = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .op = op,
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
     }
 
     return lhs;
@@ -625,9 +708,9 @@ fn parseSum(
 fn parseProd(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse term", .{});
-    var lhs = try self.parseFactor(alloc);
+    var lhs: SpannedNode = try self.parseFactor(alloc);
 
     while (true) {
         const op = switch (try self.peekToken()) {
@@ -638,12 +721,17 @@ fn parseProd(
         _ = self.advance();
         const rhs = try self.parseFactor(alloc);
 
-        const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-        lhs = .{ .binary_op = .{
-            .lhs = prev,
-            .op = op,
-            .rhs = try self.allocNode(alloc, rhs),
-        } };
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .binary_op = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .op = op,
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
     }
 
     return lhs;
@@ -652,9 +740,10 @@ fn parseProd(
 fn parseFactor(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse factor", .{});
-    const op = switch (try self.peekToken()) {
+    const op_tok = try self.peek();
+    const op = switch (op_tok.token) {
         .plus => {
             // 1 + 1 * -f();
             _ = self.advance();
@@ -666,50 +755,68 @@ fn parseFactor(
     };
     const val = try self.parseFactor(alloc);
 
-    return .{ .unary_op = .{
-        .op = op,
-        .val = try self.allocNode(alloc, val),
-    } };
+    return .{
+        .node = .{ .unary_op = .{
+            .op = op,
+            .val = try self.allocNode(alloc, val),
+        } },
+        .span = op_tok.span.merge(val.span),
+    };
 }
 
 fn parseChain(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse chain", .{});
-    var lhs = try self.parseAtom(alloc);
+    var lhs: SpannedNode = try self.parseAtom(alloc);
 
     while (true) {
         switch (try self.peekToken()) {
             .lparen => {
                 // std.log.debug("parse call", .{});
-                const args = try self.parseArgs(alloc);
-                const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-                lhs = .{ .call = .{
-                    .val = prev,
-                    .args = args,
-                } };
+                const args, const args_span = try self.parseArgs(alloc);
+                // FIXME: this is a workaround to a bug in the Zig compiler
+                // https://github.com/ziglang/zig/issues/24627
+                const lhs_copy = lhs;
+                lhs = .{
+                    .node = .{ .call = .{
+                        .val = try self.allocNode(alloc, lhs_copy),
+                        .args = args,
+                    } },
+                    .span = lhs_copy.span.merge(args_span),
+                };
             },
             .single_dot => {
                 // std.log.debug("parse field_acc", .{});
                 self.advance();
                 const ident = try self.parseToken(.ident);
-                const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-                lhs = .{ .field_acc = .{
-                    .val = prev,
-                    .ident = ident,
-                } };
+                // FIXME: this is a workaround to a bug in the Zig compiler
+                // https://github.com/ziglang/zig/issues/24627
+                const lhs_copy = lhs;
+                lhs = .{
+                    .node = .{ .field_acc = .{
+                        .val = try self.allocNode(alloc, lhs_copy),
+                        .ident = ident,
+                    } },
+                    .span = lhs_copy.span.merge(ident),
+                };
             },
             .lbracket => {
                 // std.log.debug("parse index_acc", .{});
                 self.advance();
                 const expr = try self.parseExpr(alloc);
                 _ = try self.parseToken(.rbracket);
-                const prev = try self.allocNode(alloc, lhs); // https://github.com/ziglang/zig/issues/24627
-                lhs = .{ .index_acc = .{
-                    .val = prev,
-                    .expr = try self.allocNode(alloc, expr),
-                } };
+                // FIXME: this is a workaround to a bug in the Zig compiler
+                // https://github.com/ziglang/zig/issues/24627
+                const lhs_copy = lhs;
+                lhs = .{
+                    .node = .{ .index_acc = .{
+                        .val = try self.allocNode(alloc, lhs_copy),
+                        .expr = try self.allocNode(alloc, expr),
+                    } },
+                    .span = lhs_copy.span.merge(expr.span),
+                };
             },
             else => break,
         }
@@ -721,19 +828,23 @@ fn parseChain(
 fn parseArgs(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!NodeRange {
+) Error!struct { NodeRange, Span } {
     // std.log.debug("parse args", .{});
-    var args: std.ArrayListUnmanaged(Node) = .{};
-    defer args.deinit(alloc);
+    var arg_nodes: std.ArrayListUnmanaged(Node) = .{};
+    defer arg_nodes.deinit(alloc);
+    var arg_spans: std.ArrayListUnmanaged(Span) = .{};
+    defer arg_spans.deinit(alloc);
 
-    _ = try self.parseToken(.lparen);
+    const lparen = try self.parseToken(.lparen);
     while (true) {
         switch (try self.peekToken()) {
             .rparen => break,
             else => {},
         }
+        const expr = try self.parseExpr(alloc);
 
-        try args.append(alloc, try self.parseExpr(alloc));
+        try arg_nodes.append(alloc, expr.node);
+        try arg_spans.append(alloc, expr.span);
 
         switch (try self.peekToken()) {
             .rparen => break,
@@ -741,29 +852,45 @@ fn parseArgs(
             else => return error.InvalidSyntax,
         }
     }
-    _ = try self.parseToken(.rparen);
+    const rparen = try self.parseToken(.rparen);
 
-    return try self.allocNodes(alloc, args.items);
+    return .{
+        try self.allocNodes(
+            alloc,
+            arg_nodes.items,
+            arg_spans.items,
+        ),
+        lparen.merge(rparen),
+    };
 }
 
 fn parseAtom(
     self: *@This(),
     alloc: std.mem.Allocator,
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse atom", .{});
     switch (try self.peekToken()) {
         .str_lit => return try self.parseLitStr(),
         .char_lit => return try self.parseLitChar(),
         .float_lit => return try self.parseLitFloat(),
         .int_lit => return try self.parseLitInt(),
-        .ident => return .{ .access = .{
-            .ident = try self.parseToken(.ident),
-        } },
+        .ident => {
+            const ident = try self.parseToken(.ident);
+            return .{
+                .node = .{ .access = .{
+                    .ident = ident,
+                } },
+                .span = ident,
+            };
+        },
         .lparen => {
-            _ = try self.parseToken(.lparen);
+            const lparen = try self.parseToken(.lparen);
             const expr = try self.parseExpr(alloc);
-            _ = try self.parseToken(.rparen);
-            return expr;
+            const rparen = try self.parseToken(.rparen);
+            return .{
+                .node = expr.node,
+                .span = lparen.merge(rparen),
+            };
         },
         .lbrace => return try self.parseScope(alloc),
         .@"fn", .@"extern" => return try self.parseFn(alloc),
@@ -777,32 +904,38 @@ fn parseAtom(
 
 fn parseLitStr(
     self: *@This(),
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse lit str", .{});
     const span = try self.parseToken(.str_lit);
     // .val = self.readSpan(span)[1..][0 .. span.len() - 2],
-    return .{ .str_lit = .{
-        .tok = span,
-    } };
+    return .{
+        .node = .{ .str_lit = .{
+            .tok = span,
+        } },
+        .span = span,
+    };
 }
 
 fn parseLitChar(
     self: *@This(),
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse lit char", .{});
     const span = try self.parseToken(.char_lit);
     const str = span.read(self.tokenizer.source);
     // TODO: escapes
     if (str.len != 3) return error.InvalidSyntax;
-    return .{ .char_lit = .{
-        .tok = span,
-        .val = str[1],
-    } };
+    return .{
+        .node = .{ .char_lit = .{
+            .tok = span,
+            .val = str[1],
+        } },
+        .span = span,
+    };
 }
 
 fn parseLitFloat(
     self: *@This(),
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse lit float", .{});
     const span = try self.parseToken(.float_lit);
 
@@ -833,14 +966,17 @@ fn parseLitFloat(
         }
     }
 
-    return .{ .float_lit = .{
-        .val = num,
-    } };
+    return .{
+        .node = .{ .float_lit = .{
+            .val = num,
+        } },
+        .span = span,
+    };
 }
 
 fn parseLitInt(
     self: *@This(),
-) Error!Node {
+) Error!SpannedNode {
     // std.log.debug("parse lit int", .{});
     const span = try self.parseToken(.int_lit);
 
@@ -859,9 +995,12 @@ fn parseLitInt(
         num += digit;
     }
 
-    return .{ .int_lit = .{
-        .val = num,
-    } };
+    return .{
+        .node = .{ .int_lit = .{
+            .val = num,
+        } },
+        .span = span,
+    };
 }
 
 fn numberLiteralSplitBase(
@@ -890,26 +1029,32 @@ fn numberLiteralSplitBase(
 fn parseFn(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
+) !SpannedNode {
     // std.log.debug("parse fn", .{});
     const proto = try self.parseProto(alloc);
 
     const next_tok = try self.peekToken();
-    if (proto.proto.@"extern" and next_tok == .at) {
+    if (proto.node.proto.@"extern" and next_tok == .at) {
         self.advance();
         const symexpr = try self.parseExpr(alloc);
 
-        return .{ .@"fn" = .{
-            .proto = try self.allocNode(alloc, proto),
-            .scope_or_symexpr = try self.allocNode(alloc, symexpr),
-        } };
+        return .{
+            .node = .{ .@"fn" = .{
+                .proto = try self.allocNode(alloc, proto),
+                .scope_or_symexpr = try self.allocNode(alloc, symexpr),
+            } },
+            .span = proto.span.merge(symexpr.span),
+        };
     } else if (next_tok == .lbrace) {
         const scope = try self.parseScope(alloc);
 
-        return .{ .@"fn" = .{
-            .proto = try self.allocNode(alloc, proto),
-            .scope_or_symexpr = try self.allocNode(alloc, scope),
-        } };
+        return .{
+            .node = .{ .@"fn" = .{
+                .proto = try self.allocNode(alloc, proto),
+                .scope_or_symexpr = try self.allocNode(alloc, scope),
+            } },
+            .span = proto.span.merge(scope.span),
+        };
     } else {
         return proto;
     }
@@ -918,10 +1063,11 @@ fn parseFn(
 fn parseProto(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
+) !SpannedNode {
     // std.log.debug("parse proto", .{});
     var is_extern = false;
-    switch (try self.peekToken()) {
+    const maybe_extern_tok = try self.peek();
+    switch (maybe_extern_tok.token) {
         .@"extern" => {
             is_extern = true;
             self.advance();
@@ -933,20 +1079,26 @@ fn parseProto(
     const params = try self.parseParams(alloc);
 
     var return_ty_expr: ?NodeId = null;
+    var end_span = params.span;
     switch (try self.peekToken()) {
         .colon => {
             self.advance();
-            return_ty_expr = try self.allocNode(alloc, try self.parseExpr(alloc));
+            const expr = try self.parseExpr(alloc);
+            return_ty_expr = try self.allocNode(alloc, expr);
+            end_span = expr.span;
         },
         else => {},
     }
 
-    return .{ .proto = .{
-        .@"extern" = is_extern,
-        .params = params.params,
-        .is_va_args = params.is_va_args,
-        .return_ty_expr = return_ty_expr,
-    } };
+    return .{
+        .node = .{ .proto = .{
+            .@"extern" = is_extern,
+            .params = params.params,
+            .is_va_args = params.is_va_args,
+            .return_ty_expr = return_ty_expr,
+        } },
+        .span = maybe_extern_tok.span.merge(end_span),
+    };
 }
 
 fn parseParams(
@@ -954,15 +1106,18 @@ fn parseParams(
     alloc: std.mem.Allocator,
 ) !struct {
     params: NodeRange,
+    span: Span,
     is_va_args: bool,
 } {
     // std.log.debug("parse params", .{});
-    var params: std.ArrayListUnmanaged(Node) = .{};
-    defer params.deinit(alloc);
+    var param_nodes: std.ArrayListUnmanaged(Node) = .{};
+    defer param_nodes.deinit(alloc);
+    var param_spans: std.ArrayListUnmanaged(Span) = .{};
+    defer param_spans.deinit(alloc);
 
     var va_args = false;
 
-    _ = try self.parseToken(.lparen);
+    const lparen = try self.parseToken(.lparen);
     while (true) {
         switch (try self.peekToken()) {
             .rparen => break,
@@ -975,7 +1130,8 @@ fn parseParams(
         }
 
         const param = try self.parseParam(alloc);
-        try params.append(alloc, param);
+        try param_nodes.append(alloc, param.node);
+        try param_spans.append(alloc, param.span);
 
         switch (try self.peekToken()) {
             .rparen => break,
@@ -983,10 +1139,15 @@ fn parseParams(
             else => {},
         }
     }
-    _ = try self.parseToken(.rparen);
+    const rparen = try self.parseToken(.rparen);
 
     return .{
-        .params = try self.allocNodes(alloc, params.items),
+        .params = try self.allocNodes(
+            alloc,
+            param_nodes.items,
+            param_spans.items,
+        ),
+        .span = lparen.merge(rparen),
         .is_va_args = va_args,
     };
 }
@@ -994,82 +1155,99 @@ fn parseParams(
 fn parseParam(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
+) !SpannedNode {
     // std.log.debug("parse param", .{});
     const ident = try self.parseToken(.ident);
     _ = try self.parseToken(.colon);
-    const ty = try self.allocNode(alloc, try self.parseExpr(alloc));
+    const ty_expr = try self.parseExpr(alloc);
+    const ty = try self.allocNode(alloc, ty_expr);
 
-    return .{ .param = .{
-        .ident = ident,
-        .type = ty,
-    } };
+    return .{
+        .node = .{ .param = .{
+            .ident = ident,
+            .type = ty,
+        } },
+        .span = ident.merge(ty_expr.span),
+    };
 }
 
 fn parseIf(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
-    _ = try self.parseToken(.@"if");
+) !SpannedNode {
+    const if_kw = try self.parseToken(.@"if");
     const check_expr = try self.parseExpr(alloc);
     const on_true_scope = try self.parseScope(alloc);
-    var on_false_scope: Node = undefined;
+    var on_false_scope: SpannedNode = undefined;
 
     if (self.peekToken() catch .invalid_byte == .@"else") {
         _ = try self.parseToken(.@"else");
 
         if (self.peekToken() catch .invalid_byte == .@"if") {
-            const nested_if = try self.allocNode(alloc, try self.parseIf(alloc));
-            on_false_scope = .{ .scope = .{
-                .stmts = .{ .start = nested_if, .end = nested_if + 1 },
-                .has_trailing_semi = true,
-            } };
+            // TODO: does not need to reCurse
+            const nested_if = try self.parseIf(alloc);
+            const nested_if_id = try self.allocNode(alloc, nested_if);
+            on_false_scope = .{
+                .node = .{ .scope = .{
+                    .stmts = .{ .start = nested_if_id, .end = nested_if_id + 1 },
+                    .has_trailing_semi = true,
+                } },
+                .span = nested_if.span,
+            };
         } else {
             on_false_scope = try self.parseScope(alloc);
         }
     } else {
-        on_false_scope = .{ .scope = .{
-            .stmts = .{},
-            .has_trailing_semi = true,
-        } };
+        on_false_scope = .{
+            .node = .{ .scope = .{
+                .stmts = .{},
+                .has_trailing_semi = true,
+            } },
+            .span = on_true_scope.span,
+        };
     }
 
-    return .{ .@"if" = .{
-        .check_expr = try self.allocNode(alloc, check_expr),
-        .on_true_scope = try self.allocNode(alloc, on_true_scope),
-        .on_false_scope = try self.allocNode(alloc, on_false_scope),
-    } };
+    return .{
+        .node = .{ .@"if" = .{
+            .check_expr = try self.allocNode(alloc, check_expr),
+            .on_true_scope = try self.allocNode(alloc, on_true_scope),
+            .on_false_scope = try self.allocNode(alloc, on_false_scope),
+        } },
+        .span = if_kw.merge(on_false_scope.span),
+    };
 }
 
 fn parseLoop(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
-    _ = try self.parseToken(.loop);
+) !SpannedNode {
+    const loop = try self.parseToken(.loop);
 
     const scope = try self.parseScope(alloc);
-    return .{ .loop = .{
-        .scope = try self.allocNode(alloc, scope),
-    } };
+    return .{
+        .node = .{ .loop = .{
+            .scope = try self.allocNode(alloc, scope),
+        } },
+        .span = loop.merge(scope.span),
+    };
 }
 
 fn parseScope(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
+) !SpannedNode {
     // std.log.debug("parse scope", .{});
-    var stmts: std.ArrayListUnmanaged(Node) = .{};
-    defer stmts.deinit(alloc);
+    var stmt_nodes: std.ArrayListUnmanaged(Node) = .{};
+    defer stmt_nodes.deinit(alloc);
+    var stmt_spans: std.ArrayListUnmanaged(Span) = .{};
+    defer stmt_spans.deinit(alloc);
 
     var has_trailing_semi = true;
 
-    _ = try self.parseToken(.lbrace);
+    const lbrace = try self.parseToken(.lbrace);
     while (true) {
         switch (try self.peekToken()) {
-            .rbrace => {
-                self.advance();
-                break;
-            },
+            .rbrace => break,
             .semi => {
                 self.advance();
                 continue;
@@ -1078,28 +1256,36 @@ fn parseScope(
         }
 
         const stmt = try self.parseStmt(alloc);
-        try stmts.append(alloc, stmt);
+        try stmt_nodes.append(alloc, stmt.node);
+        try stmt_spans.append(alloc, stmt.span);
 
         switch (try self.peekToken()) {
             .rbrace => {
                 has_trailing_semi = false;
-                self.advance();
                 break;
             },
             else => {},
         }
     }
+    const rbrace = try self.parseToken(.rbrace);
 
-    return .{ .scope = .{
-        .stmts = try self.allocNodes(alloc, stmts.items),
-        .has_trailing_semi = has_trailing_semi,
-    } };
+    return .{
+        .node = .{ .scope = .{
+            .stmts = try self.allocNodes(
+                alloc,
+                stmt_nodes.items,
+                stmt_spans.items,
+            ),
+            .has_trailing_semi = has_trailing_semi,
+        } },
+        .span = lbrace.merge(rbrace),
+    };
 }
 
 fn parseStmt(
     self: *@This(),
     alloc: std.mem.Allocator,
-) !Node {
+) !SpannedNode {
     // std.log.debug("parse stmt", .{});
     const next = try self.peekToken();
     return switch (next) {
