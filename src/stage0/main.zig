@@ -115,8 +115,19 @@ pub fn Range(
 }
 
 pub const NameHint = struct {
-    prev: ?*const NameHint = null,
-    part: []const u8 = "??",
+    prev: ?*const NameHint,
+    part: []const u8,
+    len: usize,
+
+    pub fn new(
+        base: []const u8,
+    ) @This() {
+        return .{
+            .prev = null,
+            .part = base,
+            .len = base.len,
+        };
+    }
 
     pub fn push(
         self: *const @This(),
@@ -125,27 +136,23 @@ pub const NameHint = struct {
         return .{
             .prev = self,
             .part = part,
+            .len = self.len + part.len + 1,
         };
     }
 
     pub fn generate(
         self: *const @This(),
         alloc: std.mem.Allocator,
-    ) ![]const u8 {
-        var len: usize = 0;
+    ) error{OutOfMemory}![]const u8 {
+        const name = try alloc.alloc(u8, self.len);
+        @memset(name, '_');
         var cur: ?*const @This() = self;
+        var n = self.len;
         while (cur) |next| {
             cur = next.prev;
-            len += next.part.len + 1;
-        }
-
-        const name = try alloc.alloc(u8, len);
-        cur = self;
-        while (cur) |next| {
-            cur = next.prev;
-            name[len - 1] = '_';
-            len -= next.part.len + 1;
-            std.mem.copyForwards(u8, name[len..], next.part);
+            n -= next.part.len;
+            std.mem.copyForwards(u8, name[n..], next.part);
+            n -|= 1;
         }
 
         return name;

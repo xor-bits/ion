@@ -138,6 +138,7 @@ pub const CallStackFrame = struct {
     instr: []const Instr,
     branch_instr: BranchInstr,
     return_value: RegId,
+    block_id: BlockId,
     mode: union(enum) {
         eval,
         proto,
@@ -213,6 +214,14 @@ pub fn run(
     } });
 
     _ = try self.pushCallStack(alloc, .{ .i = 0 });
+
+    errdefer {
+        for (self.call_stack.items, 0..) |frame, i| {
+            std.debug.print("call{}: {f}\n", .{
+                i, frame.block_id,
+            });
+        }
+    }
 
     while (self.lastCallStack()) |top| {
         if (popInstr(top)) |instr| {
@@ -305,6 +314,7 @@ fn pushCallStack(
         .instr = self.instrs()[block.instructions.start.i..block.instructions.end.i],
         .branch_instr = block.branch_instruction,
         .return_value = .{ .i = 0 },
+        .block_id = block_id,
     });
     return self.lastCallStack().?;
 }
@@ -479,7 +489,6 @@ fn evalInstr(
             const type_id_value = try self.readReg(v.ty);
             if (type_id_value != .type) {
                 std.debug.print("{t} != .type", .{type_id_value});
-
                 return Error.TypeMismatch;
             }
 
@@ -488,6 +497,7 @@ fn evalInstr(
         .decl_return => |v| {
             const type_id_value = try self.readReg(v.ty);
             if (type_id_value != .type) {
+                std.debug.print("{t} != .type", .{type_id_value});
                 return Error.TypeMismatch;
             }
 

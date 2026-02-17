@@ -121,22 +121,26 @@ pub const BranchInstr = union(enum) {
 };
 
 pub const Block = struct {
+    debug_name: []const u8,
     instructions: InstrRange,
     branch_instruction: BranchInstr,
 };
 
 pub const Struct = struct {
+    debug_name: []const u8,
     // parent: StructId,
     decl_block: BlockId,
 };
 
 pub const Function = struct {
+    debug_name: []const u8,
     // parent: StructId,
     proto: ProtoId,
     entry_block: BlockId,
 };
 
 pub const Proto = struct {
+    debug_name: []const u8,
     // parent: StructId,
     is_extern: bool,
     is_va_args: bool,
@@ -167,7 +171,6 @@ pub const BuiltinVariable = enum {
     void,
     auto_int,
     auto_float,
-    
 
     c_int,
     c_char,
@@ -194,6 +197,7 @@ param_stack: std.ArrayList(RegId) = .{},
 registers: Registers = .{},
 builder: Builder = .{},
 current_block: BlockId = .{ .i = 0 },
+string_arena: std.heap.ArenaAllocator = undefined,
 
 // root_namespace: InstrId = 0,
 parser: *Parser,
@@ -202,6 +206,8 @@ pub fn deinit(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) void {
+    self.string_arena.deinit();
+
     self.builder.deinit(alloc);
     self.registers.deinit(alloc);
     self.param_stack.deinit(alloc);
@@ -223,6 +229,13 @@ fn source(
     self: *@This(),
 ) []const u8 {
     return self.parser.tokenizer.source;
+}
+
+fn allocDebugName(
+    self: *@This(),
+    name: NameHint,
+) Error![]const u8 {
+    return try name.generate(self.string_arena.allocator());
 }
 
 fn allocBlock(
@@ -288,12 +301,14 @@ fn popBlock(
     alloc: std.mem.Allocator,
     branch_instr: BranchInstr,
     block_id: ?BlockId,
+    name_hint: NameHint,
 ) Error!void {
     const current_block = block_id orelse self.current_block;
     self.blocks.items[current_block.i] = try self.builder.popBlock(
         alloc,
         &self.instrs,
         branch_instr,
+        try self.allocDebugName(name_hint),
     );
 }
 
@@ -301,6 +316,8 @@ pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) Error!void {
+    self.string_arena = .init(alloc);
+
     // TODO: measure the avg ir instruction count per source token
     try self.instrs.ensureTotalCapacity(alloc, 16);
     // TODO: measure the avg ir block count per source token
@@ -310,10 +327,11 @@ pub fn run(
     // TODO: measure the avg ir function count per source token
     try self.functions.ensureTotalCapacity(alloc, 16);
 
+    const root_name_hint: NameHint = .new("<root>");
     _ = try self.pushBlock(alloc);
     try self.convertStructContents(
         alloc,
-        &.{ .part = "<root>" },
+        &root_name_hint,
         0,
     );
 
@@ -325,7 +343,12 @@ pub fn run(
     // } });
 
     const ret = try self.convertVoidLit(alloc);
-    try self.popBlock(alloc, .{ .ret = ret }, null);
+    try self.popBlock(
+        alloc,
+        .{ .ret = ret },
+        null,
+        root_name_hint,
+    );
 }
 
 pub fn dump(
@@ -334,32 +357,35 @@ pub fn dump(
     std.debug.print("IRGEN DUMP:\n", .{});
     for (self.blocks.items, 0..) |block, id| {
         std.debug.print(
-            \\{f} = block:
+            \\{f} = block ({s}):
             \\
         , .{
             BlockId{ .i = @intCast(id) },
+            block.debug_name,
         });
         self.dumpBlock(block);
     }
     for (self.structs.items, 0..) |str, id| {
         std.debug.print(
-            \\{f} = struct:
+            \\{f} = struct ({s}):
             \\    decl_block {f}
             \\
         , .{
             StructId{ .i = @intCast(id) },
+            str.debug_name,
             str.decl_block,
         });
     }
     for (self.protos.items, 0..) |proto, id| {
         std.debug.print(
-            \\{f} = proto:
+            \\{f} = proto ({s}):
             \\    is_extern {}
             \\    is_va_args {}
             \\    decl_block {f}
             \\
         , .{
             ProtoId{ .i = @intCast(id) },
+            proto.debug_name,
             proto.is_extern,
             proto.is_va_args,
             proto.decl_block,
@@ -367,12 +393,13 @@ pub fn dump(
     }
     for (self.functions.items, 0..) |func, id| {
         std.debug.print(
-            \\{f} = function:
+            \\{f} = function ({s}):
             \\    proto {f}
             \\    entry_block {f}
             \\
         , .{
             FunctionId{ .i = @intCast(id) },
+            func.debug_name,
             func.proto,
             func.entry_block,
         });
@@ -604,9 +631,14 @@ pub fn convertIf(
 ) Error!RegId {
     const @"if" = self.nodes()[node_id].@"if";
 
+    const name_hint_check = name_hint.push("check");
+    const name_hint_if_entry = name_hint.push("if_entry");
+    const name_hint_on_true = name_hint.push("on_true");
+    const name_hint_on_false = name_hint.push("on_false");
+
     const boolean = try self.convertExpr(
         alloc,
-        name_hint,
+        &name_hint_check,
         @"if".check_expr,
     );
     const result = self.registers.pushTmp();
@@ -632,6 +664,7 @@ pub fn convertIf(
         alloc,
         .{ .unconditional = continue_block },
         null,
+        name_hint_on_true,
     );
 
     const on_false_block = try self.pushBlock(alloc);
@@ -649,6 +682,7 @@ pub fn convertIf(
         alloc,
         .{ .unconditional = continue_block },
         null,
+        name_hint_on_false,
     );
 
     try self.popBlock(
@@ -659,6 +693,7 @@ pub fn convertIf(
             .on_false = on_false_block,
         } },
         if_entry_block,
+        name_hint_if_entry,
     );
 
     try self.builder.pushBlock(alloc);
@@ -704,7 +739,7 @@ pub fn convertProtoId(
             expr_node_id,
         )
     else
-        try self.convertVoidLit(alloc);
+        try self.convertAccess(alloc, "void");
 
     for (param_type_regs) |param_type| {
         try self.builder.pushInstr(alloc, .{
@@ -716,10 +751,16 @@ pub fn convertProtoId(
     });
 
     self.popScope();
-    try self.popBlock(alloc, .end, null);
+    try self.popBlock(
+        alloc,
+        .end,
+        null,
+        name_hint_proto,
+    );
     self.current_block = prev_block;
 
     self.protos.items[proto_id.i] = Proto{
+        .debug_name = try self.allocDebugName(name_hint.*),
         .decl_block = decl_block,
         .is_extern = proto.@"extern",
         .is_va_args = proto.is_va_args,
@@ -744,12 +785,12 @@ pub fn convertFnId(
     const entry_block = try self.pushBlock(alloc);
     try self.pushScope(alloc);
 
+    const name_hint_fn = name_hint.push(if (proto.@"extern") "symexpr" else "fn");
     var return_value: RegId = undefined;
     if (proto.@"extern") {
-        const name_hint_symexpr = name_hint.push("symexpr");
         return_value = try self.convertExpr(
             alloc,
-            &name_hint_symexpr,
+            &name_hint_fn,
             func.scope_or_symexpr,
         );
     } else {
@@ -764,7 +805,6 @@ pub fn convertFnId(
             } });
         }
 
-        const name_hint_fn = name_hint.push("fn");
         return_value = try self.convertScope(
             alloc,
             &name_hint_fn,
@@ -773,10 +813,16 @@ pub fn convertFnId(
     }
 
     self.popScope();
-    try self.popBlock(alloc, .{ .ret = return_value }, null);
+    try self.popBlock(
+        alloc,
+        .{ .ret = return_value },
+        null,
+        name_hint_fn,
+    );
     self.current_block = prev_block;
 
     self.functions.items[fn_id.i] = Function{
+        .debug_name = try self.allocDebugName(name_hint.*),
         .proto = proto_id,
         .entry_block = entry_block,
         // .parent = ,
@@ -1246,6 +1292,7 @@ pub const Builder = struct {
         alloc: std.mem.Allocator,
         instrs_output: *std.ArrayList(Instr),
         branch_instr: BranchInstr,
+        debug_name: []const u8,
     ) Error!Block {
         const instrs = self.top_block_instr_count;
         self.top_block_instr_count = self.block_instr_counts.pop() orelse 0;
@@ -1261,6 +1308,7 @@ pub const Builder = struct {
         self.instrs.items.len -= instrs;
 
         return Block{
+            .debug_name = debug_name,
             .instructions = instr,
             .branch_instruction = branch_instr,
         };
