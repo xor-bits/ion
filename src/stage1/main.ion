@@ -9,18 +9,41 @@ let print = fn(s: []u8) {
     let res = printf("%.*s\n\x00".ptr, s.len, s.ptr);
 };
  
-let rand = fn(): c_long {
-    let random = extern fn(): c_long @ "random";
-    random()
+let rand = fn(): c_int {
+    let rand = extern fn(): c_int @ "rand";
+    rand()
+};
+
+let srand = fn() {
+    let srand = extern fn(seed: c_uint) @ "srand";
+    let time = extern fn(t: usize): u64 @ "time";
+    srand(time(0) as c_uint);
+};
+
+let sleep = fn(sec: u32) {
+    let s = sec;
+    // let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
+    // sleep(sec);
 };
 
 let main = fn() {
     let a = 5;
     let b = 6;
+    print("hello");
     nothing(a + b + global);
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
-    printf("num: %l\n\x00".ptr, rand());
-    if rand() > 1073741823 {
-        print("Hello, world!");
-    };
+    srand();
+    let num = rand();
+    printf("num: %lu\n\x00".ptr, num);
+    let mut a = 0;
+    let mut b = 1;
+    loop {
+        printf("%u\n\x00".ptr, a);
+        let tmp = a + b;
+        a = b;
+        b = tmp;
+        sleep(1);
+    }
+    print("done");
+    let c = 4;
 };

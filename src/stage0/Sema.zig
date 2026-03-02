@@ -18,48 +18,30 @@ proto_typeids: []const TypeId = &.{},
 types: std.ArrayList(Type) = .{},
 type_ids: std.HashMapUnmanaged(Type, TypeId, TypeHashMapContext, 80) = .{},
 
+const_values: std.ArrayList(*anyopaque) = .{},
+const_types: std.ArrayList(TypeId) = .{},
+
 fn_decl_param_stack: std.ArrayList(TypeId) = .{},
 fn_decl_return: TypeId = undefined,
 call_stack: std.ArrayList(CallStackFrame) = .{},
 registers: []Value = &.{},
 
-common_types: std.EnumArray(BasicType, TypeId) = undefined,
-common_string: TypeId = undefined,
-
 ir_gen: *const IrGenerator,
 
-pub const TypeId = packed struct { i: u32 };
-pub const BasicType = enum {
-    u8,
-    u16,
-    u32,
-    u64,
-    usize,
-    i8,
-    i16,
-    i32,
-    i64,
-    isize,
-    f32,
-    f64,
+pub const ValueId = struct { i: u32 };
+pub const TypeId = struct { i: u32 };
+
+pub const Type = union(enum) {
+    int: struct {
+        bits: enum { @"8", @"16", @"32", @"64", @"128" },
+        has_sign: bool,
+    },
+    float: struct {
+        bits: enum { @"32", @"64" },
+    },
     bool,
     void,
-    auto_int,
-    auto_float,
-
-    c_int,
-    c_char,
-    c_long,
-    c_longdouble,
-    c_longlong,
-    c_short,
-    c_uint,
-    c_ulong,
-    c_ulonglong,
-    c_ushort,
-};
-pub const Type = union(enum) {
-    basic: BasicType,
+    type,
 
     array: struct {
         elements: TypeId,
@@ -85,21 +67,7 @@ pub const Type = union(enum) {
         self: @This(),
         other: @This(),
     ) bool {
-        if (@intFromEnum(self) != @intFromEnum(other))
-            return false;
-
-        switch (std.meta.activeTag(self)) {
-            .function,
-            => return self.function.is_va_args == other.function.is_va_args and
-                self.function.ret.i == other.function.ret.i and
-                std.mem.eql(TypeId, self.function.params, other.function.params),
-
-            inline else => |v| {
-                const lhs = @field(self, @tagName(v));
-                const rhs = @field(other, @tagName(v));
-                return std.meta.eql(lhs, rhs);
-            },
-        }
+        return std.meta.eql(self, other);
     }
 
     fn hash(
@@ -122,6 +90,28 @@ pub const Type = union(enum) {
         return hasher.final();
     }
 };
+
+pub const Value = struct {
+    ty: TypeId,
+    ptr: *anyopaque,
+};
+
+// pub const Value = union(enum) {
+//     int: i256,
+//     float: f64,
+//     boolean: bool,
+//     void,
+//     type: TypeId,
+//     array: []const ValueId,
+//     slice: []const ValueId,
+//     pointer: ValueId,
+//     string: []const u8,
+//     float: f64,
+//     type: TypeId,
+//     func: FunctionId,
+//     void,
+//     undef,
+// };
 
 pub const TypeHashMapContext = struct {
     pub fn hash(self: @This(), s: Type) u64 {
@@ -146,17 +136,6 @@ pub const CallStackFrame = struct {
     } = .eval,
     is_extern: bool = false,
     is_va_args: bool = false,
-};
-
-pub const Value = union(enum) {
-    boolean: bool,
-    string: []const u8,
-    int: u128,
-    float: f64,
-    type: TypeId,
-    func: FunctionId,
-    void,
-    undef,
 };
 
 pub const Error = error{

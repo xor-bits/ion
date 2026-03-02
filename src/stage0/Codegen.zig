@@ -232,12 +232,33 @@ pub fn run(
         \\        comptime unreachable;
         \\    }
         \\}
+        \\
+        \\pub fn BuiltinSliceType(comptime T: type) type {
+        \\    return struct {
+        \\        ptr: *const T,
+        \\        len: usize,
+        \\        pub fn new(raw: []const T) @This() {
+        \\            return .{ .ptr = @ptrCast(raw.ptr), .len = raw.len };
+        \\        }
+        \\    };
+        \\}
+        \\
+        \\pub fn BuiltinMutSliceType(comptime T: type) type {
+        \\    return struct {
+        \\        ptr: *T,
+        \\        len: usize,
+        \\        pub fn new(raw: []T) @This() {
+        \\            return .{ .ptr = @ptrCast(raw.ptr), .len = raw.len };
+        \\        }
+        \\    };
+        \\}
+        \\
     );
 
     _ = try self.convertStructContents(
         alloc,
         writer,
-        &.{ .part = "<root>" },
+        &.new("<root>"),
         0,
     );
 
@@ -345,9 +366,9 @@ pub fn convertExpr(
         },
         .slice => |v| {
             if (v.mut) {
-                try writer.print("[]", .{});
+                try writer.print("BuiltinMutSliceType(", .{});
             } else {
-                try writer.print("[]const ", .{});
+                try writer.print("BuiltinSliceType(", .{});
             }
             try self.convertExpr(
                 alloc,
@@ -355,6 +376,7 @@ pub fn convertExpr(
                 name_hint,
                 v.elements_expr,
             );
+            try writer.print(")", .{});
         },
         .pointer => |v| {
             if (v.mut) {
@@ -405,6 +427,7 @@ pub fn convertExpr(
                     .le => "<=",
                     .gt => ">",
                     .ge => ">=",
+                    .field => ".",
                     .as => unreachable,
                 }});
                 try self.convertExpr(
@@ -419,6 +442,10 @@ pub fn convertExpr(
             try writer.print("{s}", .{switch (v.op) {
                 .neg => "~",
                 .not => "!",
+                .slice => "const []",
+                .slice_mut => "[]",
+                .pointer => "const *",
+                .pointer_mut => "*",
             }});
             try self.convertExpr(
                 alloc,
@@ -477,7 +504,7 @@ pub fn convertExpr(
             try writer.print("]", .{});
         },
         .str_lit => |v| {
-            try writer.print("{s}", .{
+            try writer.print("BuiltinSliceType(u8).new({s})", .{
                 v.tok.read(self.source()),
             });
         },
@@ -725,6 +752,7 @@ pub fn convertProto(
     self.pushScope();
     defer self.popScope();
 
+    try writer.writeAll("fn(");
     for (proto.params.start..proto.params.end) |i| {
         const param = self.nodes()[i].param;
 
