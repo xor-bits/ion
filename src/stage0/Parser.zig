@@ -584,7 +584,7 @@ fn parseComparison(
     alloc: std.mem.Allocator,
 ) Error!SpannedNode {
     // std.log.debug("parse comparison", .{});
-    var lhs: SpannedNode = try self.parseAssign(alloc);
+    var lhs: SpannedNode = try self.parseCast(alloc);
 
     while (true) {
         const op = switch (self.peekToken() catch break) {
@@ -597,7 +597,7 @@ fn parseComparison(
             else => break,
         };
         _ = self.advance();
-        const rhs = try self.parseAssign(alloc);
+        const rhs = try self.parseCast(alloc);
 
         // FIXME: this is a workaround to a bug in the Zig compiler
         // https://github.com/ziglang/zig/issues/24627
@@ -606,32 +606,6 @@ fn parseComparison(
             .node = .{ .binary_op = .{
                 .lhs = try self.allocNode(alloc, lhs_copy),
                 .op = op,
-                .rhs = try self.allocNode(alloc, rhs),
-            } },
-            .span = lhs_copy.span.merge(rhs.span),
-        };
-    }
-
-    return lhs;
-}
-
-fn parseAssign(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-) Error!SpannedNode {
-    // std.log.debug("parse assign", .{});
-    var lhs: SpannedNode = try self.parseCast(alloc);
-
-    if (try self.peekToken() == .single_eq) {
-        _ = self.advance();
-        const rhs = try self.parseCast(alloc);
-
-        // FIXME: this is a workaround to a bug in the Zig compiler
-        // https://github.com/ziglang/zig/issues/24627
-        const lhs_copy = lhs;
-        lhs = .{
-            .node = .{ .assign = .{
-                .lhs = try self.allocNode(alloc, lhs_copy),
                 .rhs = try self.allocNode(alloc, rhs),
             } },
             .span = lhs_copy.span.merge(rhs.span),
@@ -1290,8 +1264,33 @@ fn parseStmt(
     const next = try self.peekToken();
     return switch (next) {
         .let => try self.parseDecl(alloc),
-        else => try self.parseExpr(alloc),
+        else => try self.parseStmtExpr(alloc),
     };
+}
+
+fn parseStmtExpr(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !SpannedNode {
+    var lhs = try self.parseExpr(alloc);
+
+    if (try self.peekToken() == .single_eq) {
+        _ = self.advance();
+        const rhs = try self.parseCast(alloc);
+
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .assign = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
+    }
+
+    return lhs;
 }
 
 pub fn dump(
