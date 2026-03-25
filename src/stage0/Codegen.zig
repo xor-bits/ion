@@ -195,6 +195,13 @@ fn createVariable(
     return new;
 }
 
+fn indent(
+    writer: *std.Io.Writer,
+    depth: u8,
+) Error!void {
+    try writer.splatByteAll(' ', depth * 4);
+}
+
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -332,10 +339,13 @@ pub fn convertDecl(
         decl.expr,
     );
 
-    if (mode == .local)
-        try writer.print(";\n_ = .{{{f}}}", .{
+    if (mode == .local) {
+        try writer.print(";\n", .{});
+        try indent(writer, self.depth);
+        try writer.print("_ = .{{{f}}}", .{
             variable.print(self.source()),
         });
+    }
 }
 
 pub fn convertExpr(
@@ -579,16 +589,20 @@ pub fn convertScope(
     const scope = self.nodes()[node_id].scope;
 
     const scope_id = self.scope_id;
-    try writer.print("_{}: {{", .{
+    try writer.print("_{}: {{\n", .{
         scope_id,
     });
     self.scope_id += 1;
+
+    self.pushScope();
+    defer self.popScope();
 
     if (scope.stmts.splitLast()) |_stmts| {
         const stmts = _stmts.@"0";
         const last_stmt = _stmts.@"1";
 
         for (stmts.start..stmts.end) |i| {
+            try indent(writer, self.depth);
             try self.convertStmt(
                 alloc,
                 writer,
@@ -598,10 +612,12 @@ pub fn convertScope(
             );
         }
 
-        if (!scope.has_trailing_semi)
+        try indent(writer, self.depth);
+        if (!scope.has_trailing_semi) {
             try writer.print("break :_{} ", .{
                 scope_id,
             });
+        }
         try self.convertStmt(
             alloc,
             writer,
@@ -609,16 +625,20 @@ pub fn convertScope(
             last_stmt,
             scope.has_trailing_semi,
         );
-        if (scope.has_trailing_semi)
-            try writer.print("break :_{} {{}};", .{
+        if (scope.has_trailing_semi) {
+            try indent(writer, self.depth);
+            try writer.print("break :_{} {{}};\n", .{
                 scope_id,
             });
+        }
     } else {
-        try writer.print("break :_{} {{}};", .{
+        try indent(writer, self.depth);
+        try writer.print("break :_{} {{}};\n", .{
             scope_id,
         });
     }
 
+    try indent(writer, self.depth - 1);
     try writer.print("}}", .{});
 }
 
@@ -721,20 +741,26 @@ pub fn convertFn(
     if (!proto.@"extern") {
         try writer.print(" {{\n", .{});
 
-        try writer.print("const @\"result\" =\n", .{});
+        try indent(writer, self.depth);
+        try writer.writeAll("const @\"result\" = ");
         try self.convertScope(
             alloc,
             writer,
             name_hint,
             func.scope_or_symexpr,
         );
-        try writer.print(";\nreturn @\"result\";\n", .{});
+        try writer.print(";\n", .{});
+        try indent(writer, self.depth);
+        try writer.print("return @\"result\";\n", .{});
 
+        try indent(writer, self.depth - 1);
         try writer.print("}} }}).{s}", .{
             tmp_name,
         });
     } else {
-        try writer.print(";\n}}).{s}", .{
+        try writer.print(";\n", .{});
+        try indent(writer, self.depth - 1);
+        try writer.print("}}).{s}", .{
             tmp_name,
         });
     }

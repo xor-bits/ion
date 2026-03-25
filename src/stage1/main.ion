@@ -35,10 +35,10 @@ let main = fn() {
     srand();
     let num = rand();
     printf("num: %lu\n\x00".ptr, num);
-    let mut a = 0;
-    let mut b = 1;
+    let mut a = 0 as u64;
+    let mut b = 1 as u64;
     loop {
-        printf("%u\n\x00".ptr, a);
+        // printf("%u\n\x00".ptr, a);
         let tmp = a + b;
         a = b;
         b = tmp;
