@@ -198,12 +198,24 @@ pub const BinaryOp = enum {
 pub const UnaryOp = enum {
     neg,
     not,
+    slice,
+    slice_mut,
+    pointer,
+    pointer_mut,
+    address,
+    address_mut,
     deref,
 
     pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .neg => "-",
             .not => "!",
+            .slice => "[]",
+            .slice_mut => "[]mut",
+            .pointer => "*",
+            .pointer_mut => "*mut",
+            .address => "&",
+            .address_mut => "&mut",
             .deref => "*",
         }});
     }

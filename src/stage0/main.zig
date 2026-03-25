@@ -2,9 +2,9 @@ const std = @import("std");
 
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
-// const IrGenerator = @import("IrGenerator.zig");
+const IrGenerator = @import("IrGenerator.zig");
 // const Sema = @import("Sema.zig");
-const Codegen = @import("Codegen.zig");
+// const Codegen = @import("Codegen.zig");
 
 pub fn main() !u8 {
     var gpf = std.heap.GeneralPurposeAllocator(.{}){};
@@ -55,11 +55,11 @@ pub fn main() !u8 {
 
     parser.dump();
 
-    // var ir_gen: IrGenerator = .{ .parser = &parser };
-    // defer ir_gen.deinit(alloc);
-    // try ir_gen.run(alloc);
+    var ir_gen: IrGenerator = .{ .parser = &parser };
+    defer ir_gen.deinit(alloc);
+    try ir_gen.run(alloc);
 
-    // ir_gen.dump();
+    ir_gen.dump();
 
     // var sema: Sema = .{ .ir_gen = &ir_gen };
     // defer sema.deinit(alloc);
@@ -67,16 +67,16 @@ pub fn main() !u8 {
 
     // sema.dump();
 
-    std.debug.print("running transpiler\n", .{});
-    var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
-    defer codegen.deinit(alloc);
-    codegen.run(alloc) catch |err| switch (err) {
-        error.OutOfMemory, error.WriteFailed => return err,
-        else => {
-            codegen.printErrors();
-            return 3;
-        },
-    };
+    // std.debug.print("running transpiler\n", .{});
+    // var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
+    // defer codegen.deinit(alloc);
+    // codegen.run(alloc) catch |err| switch (err) {
+    //     error.OutOfMemory, error.WriteFailed => return err,
+    //     else => {
+    //         codegen.printErrors();
+    //         return 3;
+    //     },
+    // };
 
     return 0;
 }
