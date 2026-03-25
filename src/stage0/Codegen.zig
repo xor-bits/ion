@@ -115,9 +115,12 @@ fn popScope(
     const depths = self.variable_version_map.items(.depth);
     var n = depths.len;
     var i: usize = 0;
-    while (i < n) : (i += 1) {
+    while (i < n) {
         std.debug.assert(depths.ptr == self.variable_version_map.items(.depth).ptr);
-        if (depths[i] != self.depth) continue;
+        if (depths[i] != self.depth) {
+            i += 1;
+            continue;
+        }
 
         self.variable_version_map.swapRemove(i);
         n -= 1;
@@ -187,8 +190,9 @@ fn createVariable(
         .version = 0,
     };
 
-    std.debug.print("create {f}\n", .{
+    std.debug.print("create {f} @{}\n", .{
         new.print(self.source()),
+        self.depth,
     });
 
     try self.variable_version_map.append(alloc, new);
@@ -758,9 +762,7 @@ pub fn convertFn(
             tmp_name,
         });
     } else {
-        try writer.print(";\n", .{});
-        try indent(writer, self.depth - 1);
-        try writer.print("}}).{s}", .{
+        try writer.print("; }}).{s}", .{
             tmp_name,
         });
     }

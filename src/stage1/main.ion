@@ -21,9 +21,8 @@ let srand = fn() {
 };
 
 let sleep = fn(sec: u32) {
-    let s = sec;
-    // let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
-    // sleep(sec);
+    let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
+    sleep(sec);
 };
 
 let main = fn() {
@@ -38,7 +37,7 @@ let main = fn() {
     let mut a = 0 as u64;
     let mut b = 1 as u64;
     loop {
-        // printf("%u\n\x00".ptr, a);
+        printf("%u\n\x00".ptr, a);
         let tmp = a + b;
         a = b;
         b = tmp;
