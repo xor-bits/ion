@@ -468,7 +468,9 @@ fn parseStructContents(
             .rbrace, .eof => break,
             else => return error.InvalidSyntax,
         }
-        span = span.merge(try self.parseToken(.semi));
+        if (self.popIfEql(.semi)) |semi| {
+            span = span.merge(semi.span);
+        }
     }
 
     return .{

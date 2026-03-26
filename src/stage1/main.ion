@@ -25,12 +25,12 @@ let srand = fn() {
     let srand = extern fn(seed: c_uint) @ "srand";
     let time = extern fn(t: usize): u64 @ "time";
     srand(time(0) as c_uint);
-};
+}
 
 let sleep = fn(sec: u32) {
     let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
     sleep(sec);
-};
+}
 
 let main = fn() {
     let T = u32
