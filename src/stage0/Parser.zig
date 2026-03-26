@@ -100,6 +100,11 @@ pub const Node = union(enum) {
         mut: bool,
         pointee_expr: NodeId,
     },
+    address: struct {
+        // ampersand: Span,
+        mut: bool,
+        pointee_expr: NodeId,
+    },
     binary_op: struct {
         lhs: NodeId,
         op: BinaryOp,
@@ -189,19 +194,11 @@ pub const BinaryOp = enum {
 pub const UnaryOp = enum {
     neg,
     not,
-    slice,
-    slice_mut,
-    pointer,
-    pointer_mut,
 
     pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .neg => "-",
             .not => "!",
-            .slice => "[]",
-            .slice_mut => "[]mut",
-            .pointer => "*",
-            .pointer_mut => "*mut",
         }});
     }
 };
@@ -660,6 +657,31 @@ fn parsePointer(
     };
 }
 
+fn parseAddress(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!SpannedNode {
+    const ampersand = try self.parseToken(.ampersand);
+
+    self.expectOneOf(&[_]Token{.mut});
+    const mut = switch (self.peekToken()) {
+        .mut => b: {
+            self.advance();
+            break :b true;
+        },
+        else => false,
+    };
+    const pointee = try self.parseExpr(alloc);
+
+    return .{
+        .node = .{ .address = .{
+            .pointee_expr = try self.allocNode(alloc, pointee),
+            .mut = mut,
+        } },
+        .span = ampersand.merge(pointee.span),
+    };
+}
+
 fn parseComparison(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -966,6 +988,7 @@ fn parseAtom(
         .loop => return try self.parseLoop(alloc),
         .lbracket => return self.parseSlice(alloc),
         .asterisk => return self.parsePointer(alloc),
+        .ampersand => return self.parseAddress(alloc),
         else => return error.InvalidSyntax,
     }
 }
@@ -1507,6 +1530,10 @@ fn print(
         },
         .pointer => |v| {
             std.debug.print("pointer mut={}:\n", .{v.mut});
+            self.print(v.pointee_expr, depth + 1);
+        },
+        .address => |v| {
+            std.debug.print("address mut={}:\n", .{v.mut});
             self.print(v.pointee_expr, depth + 1);
         },
         .binary_op => |v| {

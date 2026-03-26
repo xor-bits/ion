@@ -37,6 +37,12 @@ let main = fn() {
     let mut arr: [4]T = undefined
     arr[0] = 4
 
+    // + 4
+
+    let slice: []T = &arr
+
+    // slice[0] = 5
+
     "hello"
     
         let a = 5

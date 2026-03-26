@@ -245,6 +245,31 @@ pub fn run(
         \\    }
         \\}
         \\
+        \\pub fn BuiltinAddrOf(comptime mut: bool, comptime T: type) type {
+        \\    const info = @typeInfo(T);
+        \\    if (info != .pointer) return T;
+        \\    const child_info = @typeInfo(info.pointer.child);
+        \\    if (child_info != .array) return T;
+        \\    
+        // \\    comptime std.debug.assert(!info.pointer.is_volatile);
+        // \\    comptime std.debug.assert(!info.pointer.is_allowzero);
+        // \\    comptime std.debug.assert(child_info.array.sentinel_ptr == null);
+        // \\
+        \\    if (mut) {
+        \\        return BuiltinMutSliceType(child_info.array.child);
+        \\    } else {
+        \\        return BuiltinSliceType(child_info.array.child);
+        \\    }
+        \\}
+        \\
+        \\pub fn builtin_addr_of(comptime mut: bool, raw_ptr: anytype) BuiltinAddrOf(mut, @TypeOf(raw_ptr)) {
+        \\    const info = @typeInfo(@TypeOf(raw_ptr));
+        \\    if (info != .pointer) return raw_ptr;
+        \\    const child_info = @typeInfo(info.pointer.child);
+        \\    if (child_info != .array) return raw_ptr;
+        \\    return .new(raw_ptr);
+        \\}
+        \\
         \\pub fn BuiltinSliceType(comptime T: type) type {
         \\    return struct {
         \\        ptr: *const T,
@@ -406,6 +431,18 @@ pub fn convertExpr(
                 v.pointee_expr,
             );
         },
+        .address => |v| {
+            // zig backend does not care about the mut
+            // if (v.mut) {}
+            try writer.print("builtin_addr_of({}, &", .{v.mut});
+            try self.convertExpr(
+                alloc,
+                writer,
+                name_hint,
+                v.pointee_expr,
+            );
+            try writer.print(")", .{});
+        },
         .binary_op => |v| {
             if (v.op == .as) {
                 try writer.print("builtin_cast(", .{});
@@ -457,10 +494,6 @@ pub fn convertExpr(
             try writer.print("{s}", .{switch (v.op) {
                 .neg => "~",
                 .not => "!",
-                .slice => "const []",
-                .slice_mut => "[]",
-                .pointer => "const *",
-                .pointer_mut => "*",
             }});
             try self.convertExpr(
                 alloc,
@@ -578,7 +611,13 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
-        else => std.debug.panic("TODO: {}", .{self.nodes()[node_id]}),
+
+        .@"struct",
+        .struct_contents,
+        .field,
+        .decl,
+        .param,
+        => unreachable,
     }
 
     try writer.print(")", .{});

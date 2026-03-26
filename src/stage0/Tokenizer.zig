@@ -32,6 +32,7 @@ pub const Token = enum {
     gt,
     ge,
 
+    ampersand,
     at,
     exclam,
     plus,
@@ -90,6 +91,7 @@ pub const Token = enum {
             .gt => ">",
             .ge => ">=",
 
+            .ampersand => "&",
             .at => "@",
             .exclam => "!",
             .plus => "+",
@@ -254,7 +256,6 @@ fn next(
                     '[' => .lbracket,
                     ']' => .rbracket,
 
-                    '@' => .at,
                     '=' => b: {
                         ch, span = self.popIfEql('=') orelse break :b .single_eq;
                         break :b .double_eq;
@@ -271,6 +272,8 @@ fn next(
                         ch, span = self.popIfEql('=') orelse break :b .gt;
                         break :b .ge;
                     },
+                    '&' => .ampersand,
+                    '@' => .at,
                     '+' => .plus,
                     '-' => .minus,
                     '*' => .asterisk,
