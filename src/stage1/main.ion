@@ -27,7 +27,8 @@ let sleep = fn(sec: u32) {
 
 let main = fn() {
     let T = u32;
-    let arr: T = 0;
+    let mut arr: [4]T = undefined;
+    arr[0] = 4;
     
     let a = 5;
     let b = 6;
@@ -36,6 +37,7 @@ let main = fn() {
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
     srand();
     let num = rand();
+    printf("arr[0]: %lu\n\x00".ptr, arr[0]);
     printf("num: %lu\n\x00".ptr, num);
     let mut a = 0 as u64;
     let mut b = 1 as u64;

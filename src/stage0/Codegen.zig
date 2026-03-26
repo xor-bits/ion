@@ -68,6 +68,7 @@ pub const BuiltinVariable = enum {
 
     false,
     true,
+    undefined,
 };
 
 pub const Error = error{
