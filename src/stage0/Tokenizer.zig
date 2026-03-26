@@ -50,6 +50,66 @@ pub const Token = enum {
     float_lit,
 
     invalid_byte,
+    eof,
+
+    pub fn isSimple(
+        self: @This(),
+    ) bool {
+        return switch (self) {
+            .ident,
+            .line_comment,
+            .block_comment,
+            .str_lit,
+            .char_lit,
+            .int_lit,
+            .float_lit,
+            .invalid_byte,
+            .eof,
+            => false,
+            else => true,
+        };
+    }
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        const str: []const u8 = switch (self) {
+            .semi => ";",
+            .colon => ":",
+            .comma => ",",
+            .single_dot => ".",
+            .double_dot => "..",
+            .lparen => "(",
+            .rparen => ")",
+            .lbrace => "{",
+            .rbrace => "}",
+            .lbracket => "[",
+            .rbracket => "]",
+
+            .single_eq => "=",
+            .double_eq => "==",
+            .neq => "!=",
+            .lt => "<",
+            .le => "<=",
+            .gt => ">",
+            .ge => ">=",
+
+            .at => "@",
+            .exclam => "!",
+            .plus => "+",
+            .minus => "-",
+            .asterisk => "*",
+            .slash => "/",
+            .percent => "%",
+
+            else => @tagName(self),
+        };
+        const simple = self.isSimple();
+        if (simple) try writer.writeByte('\'');
+        try writer.writeAll(str);
+        if (simple) try writer.writeByte('\'');
+    }
 };
 
 const Keyword = enum {

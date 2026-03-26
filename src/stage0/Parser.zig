@@ -217,9 +217,26 @@ pub const Error = error{
     EndOfFile,
 };
 
+const EnumSetFmt = struct {
+    set: std.EnumSet(Token),
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        var it = self.set.iterator();
+        if (it.next()) |tok| {
+            try writer.print("{f}", .{tok});
+        }
+        while (it.next()) |tok| {
+            try writer.print(", {f}", .{tok});
+        }
+    }
+};
+
 nodes: std.ArrayList(Node) = .{},
 node_spans: std.ArrayList(Span) = .{},
 // TODO: node_stack: std.ArrayList(Node) = .{},
+expected: std.EnumSet(Token) = .{},
 tokenizer: *Tokenizer,
 current: u32 = 0,
 
@@ -237,8 +254,13 @@ pub fn run(
 ) !void {
     errdefer {
         if (self.peek()) |current| {
-            std.debug.print("parse error at token: {s}\n", .{
+            std.debug.print(
+                \\parse error at token: {s}
+                \\expected one of: {f}
+                \\
+            , .{
                 current.span.read(self.tokenizer.source),
+                EnumSetFmt{ .set = self.expected },
             });
         } else |_| {}
     }
@@ -336,6 +358,7 @@ fn popIfEql(
     self: *@This(),
     expect: Token,
 ) ?SpannedToken {
+    self.expectOneOf(&[_]Token{expect});
     const tok = self.peek() catch return null;
     if (tok.token != expect) return null;
 
@@ -347,6 +370,7 @@ fn advance(
     self: *@This(),
 ) void {
     self.current += 1;
+    self.expected = .{};
 }
 
 fn parseToken(
@@ -364,6 +388,12 @@ fn parseFile(
 ) Error!SpannedNode {
     // std.log.debug("parse file", .{});
     return self.parseStructContents(alloc);
+}
+
+fn expectOneOf(self: *@This(), tokens: []const Token) void {
+    for (tokens) |token| {
+        self.expected.insert(token);
+    }
 }
 
 fn parseStructContents(
@@ -384,6 +414,7 @@ fn parseStructContents(
     var span: Span = Span{};
 
     while (true) {
+        self.expectOneOf(&[_]Token{ .ident, .let, .rbrace });
         const tok = self.peekToken() catch break;
         switch (tok) {
             .ident => {
@@ -430,6 +461,7 @@ fn parseField(
     const colon = try self.parseToken(.colon);
     const ty = try self.parseExpr(alloc);
 
+    self.expectOneOf(&[_]Token{ .single_eq, .comma });
     const tok = try self.peekToken();
     switch (tok) {
         .single_eq => {
@@ -472,16 +504,26 @@ fn parseDecl(
 ) Error!SpannedNode {
     // std.log.debug("parse decl", .{});
     const let = try self.parseToken(.let);
-    var mut: ?Span = null;
-    if (try self.peekToken() == .mut)
-        mut = try self.parseToken(.mut);
+
+    self.expectOneOf(&[_]Token{ .mut, .ident });
+    const mut = switch (try self.peekToken()) {
+        .mut => try self.parseToken(.mut),
+        .ident => null,
+        else => return error.InvalidSyntax,
+    };
 
     const ident = try self.parseToken(.ident);
-    var type_hint: ?NodeId = null;
-    if (try self.peekToken() == .colon) {
-        self.advance();
-        type_hint = try self.allocNode(alloc, try self.parseExpr(alloc));
-    }
+
+    self.expectOneOf(&[_]Token{ .colon, .single_eq });
+    const type_hint = switch (try self.peekToken()) {
+        .colon => b: {
+            self.advance();
+            break :b try self.allocNode(alloc, try self.parseExpr(alloc));
+        },
+        .single_eq => null,
+        else => return error.InvalidSyntax,
+    };
+
     const eq = try self.parseToken(.single_eq);
     const expr = try self.parseExpr(alloc);
     // const semi = try self.parseToken(.semi);
@@ -513,19 +555,20 @@ fn parseSlice(
 ) Error!SpannedNode {
     const lbracket = try self.parseToken(.lbracket);
 
+    self.expectOneOf(&[_]Token{.rbracket});
     switch (try self.peekToken()) {
         .rbracket => {
             self.advance();
             // is a slice, runtime length
 
-            var mut: bool = false;
-            switch (try self.peekToken()) {
-                .mut => {
+            self.expectOneOf(&[_]Token{.mut});
+            const mut = switch (try self.peekToken()) {
+                .mut => b: {
                     self.advance();
-                    mut = true;
+                    break :b true;
                 },
-                else => {},
-            }
+                else => false,
+            };
             const elements = try self.parseExpr(alloc);
 
             return .{
@@ -560,14 +603,14 @@ fn parsePointer(
 ) Error!SpannedNode {
     const asterisk = try self.parseToken(.asterisk);
 
-    var mut: bool = false;
-    switch (try self.peekToken()) {
-        .mut => {
+    self.expectOneOf(&[_]Token{.mut});
+    const mut = switch (try self.peekToken()) {
+        .mut => b: {
             self.advance();
-            mut = true;
+            break :b true;
         },
-        else => {},
-    }
+        else => false,
+    };
     const pointee = try self.parseExpr(alloc);
 
     return .{
@@ -587,6 +630,7 @@ fn parseComparison(
     var lhs: SpannedNode = try self.parseCast(alloc);
 
     while (true) {
+        self.expectOneOf(&[_]Token{ .double_eq, .neq, .lt, .le, .gt, .ge });
         const op = switch (self.peekToken() catch break) {
             .double_eq => BinaryOp.eq,
             .neq => BinaryOp.neq,
@@ -623,6 +667,7 @@ fn parseCast(
     var lhs: SpannedNode = try self.parseSum(alloc);
 
     while (true) {
+        self.expectOneOf(&[_]Token{.as});
         const op = switch (try self.peekToken()) {
             .as => BinaryOp.as,
             else => break,
@@ -654,6 +699,7 @@ fn parseSum(
     var lhs: SpannedNode = try self.parseProd(alloc);
 
     while (true) {
+        self.expectOneOf(&[_]Token{ .asterisk, .slash, .percent });
         const op = switch (try self.peekToken()) {
             .asterisk => BinaryOp.mul,
             .slash => BinaryOp.div,
@@ -687,6 +733,7 @@ fn parseProd(
     var lhs: SpannedNode = try self.parseFactor(alloc);
 
     while (true) {
+        self.expectOneOf(&[_]Token{ .plus, .minus });
         const op = switch (try self.peekToken()) {
             .plus => BinaryOp.add,
             .minus => BinaryOp.sub,
@@ -716,6 +763,7 @@ fn parseFactor(
     alloc: std.mem.Allocator,
 ) Error!SpannedNode {
     // std.log.debug("parse factor", .{});
+    self.expectOneOf(&[_]Token{ .plus, .minus, .exclam });
     const op_tok = try self.peek();
     const op = switch (op_tok.token) {
         .plus => {
@@ -746,6 +794,7 @@ fn parseChain(
     var lhs: SpannedNode = try self.parseAtom(alloc);
 
     while (true) {
+        self.expectOneOf(&[_]Token{ .lparen, .single_dot, .lbracket });
         switch (try self.peekToken()) {
             .lparen => {
                 // std.log.debug("parse call", .{});
@@ -811,6 +860,7 @@ fn parseArgs(
 
     const lparen = try self.parseToken(.lparen);
     while (true) {
+        self.expectOneOf(&[_]Token{.rparen});
         switch (try self.peekToken()) {
             .rparen => break,
             else => {},
@@ -820,6 +870,7 @@ fn parseArgs(
         try arg_nodes.append(alloc, expr.node);
         try arg_spans.append(alloc, expr.span);
 
+        self.expectOneOf(&[_]Token{ .rparen, .comma });
         switch (try self.peekToken()) {
             .rparen => break,
             .comma => self.advance(),
@@ -843,6 +894,11 @@ fn parseAtom(
     alloc: std.mem.Allocator,
 ) Error!SpannedNode {
     // std.log.debug("parse atom", .{});
+    self.expectOneOf(&[_]Token{
+        .str_lit, .char_lit, .float_lit, .int_lit,   .ident,
+        .lparen,  .lbrace,   .@"fn",     .@"extern", .@"if",
+        .loop,    .lbracket, .asterisk,
+    });
     switch (try self.peekToken()) {
         .str_lit => return try self.parseLitStr(),
         .char_lit => return try self.parseLitChar(),
@@ -1008,7 +1064,26 @@ fn parseFn(
     const proto = try self.parseProto(alloc);
 
     const next_tok = try self.peekToken();
-    if (proto.node.proto.@"extern" and next_tok == .at) {
+
+    self.expectOneOf(&[_]Token{.lbrace});
+    if (next_tok == .lbrace) {
+        const scope = try self.parseScope(alloc);
+
+        return .{
+            .node = .{ .@"fn" = .{
+                .proto = try self.allocNode(alloc, proto),
+                .scope_or_symexpr = try self.allocNode(alloc, scope),
+            } },
+            .span = proto.span.merge(scope.span),
+        };
+    }
+
+    if (!proto.node.proto.@"extern") {
+        return proto;
+    }
+
+    self.expectOneOf(&[_]Token{.at});
+    if (next_tok == .at) {
         self.advance();
         const symexpr = try self.parseExpr(alloc);
 
@@ -1019,19 +1094,9 @@ fn parseFn(
             } },
             .span = proto.span.merge(symexpr.span),
         };
-    } else if (next_tok == .lbrace) {
-        const scope = try self.parseScope(alloc);
-
-        return .{
-            .node = .{ .@"fn" = .{
-                .proto = try self.allocNode(alloc, proto),
-                .scope_or_symexpr = try self.allocNode(alloc, scope),
-            } },
-            .span = proto.span.merge(scope.span),
-        };
-    } else {
-        return proto;
     }
+
+    return proto;
 }
 
 fn parseProto(
@@ -1039,30 +1104,23 @@ fn parseProto(
     alloc: std.mem.Allocator,
 ) !SpannedNode {
     // std.log.debug("parse proto", .{});
-    var is_extern = false;
-    const maybe_extern_tok = try self.peek();
-    switch (maybe_extern_tok.token) {
-        .@"extern" => {
-            is_extern = true;
-            self.advance();
-        },
-        else => {},
-    }
+    const start_span = try self.peekSpan();
+
+    const is_extern = null != self.popIfEql(.@"extern");
 
     _ = try self.parseToken(.@"fn");
     const params = try self.parseParams(alloc);
 
-    var return_ty_expr: ?NodeId = null;
-    var end_span = params.span;
-    switch (try self.peekToken()) {
-        .colon => {
+    self.expectOneOf(&[_]Token{.colon});
+    const end_span, const return_ty_expr = switch (try self.peekToken()) {
+        .colon => b: {
             self.advance();
             const expr = try self.parseExpr(alloc);
-            return_ty_expr = try self.allocNode(alloc, expr);
-            end_span = expr.span;
+            const return_ty_expr = try self.allocNode(alloc, expr);
+            break :b .{ expr.span, return_ty_expr };
         },
-        else => {},
-    }
+        else => .{ params.span, null },
+    };
 
     return .{
         .node = .{ .proto = .{
@@ -1071,7 +1129,7 @@ fn parseProto(
             .is_va_args = params.is_va_args,
             .return_ty_expr = return_ty_expr,
         } },
-        .span = maybe_extern_tok.span.merge(end_span),
+        .span = start_span.merge(end_span),
     };
 }
 
@@ -1093,6 +1151,7 @@ fn parseParams(
 
     const lparen = try self.parseToken(.lparen);
     while (true) {
+        self.expectOneOf(&[_]Token{ .rparen, .double_dot });
         switch (try self.peekToken()) {
             .rparen => break,
             .double_dot => {
@@ -1107,6 +1166,7 @@ fn parseParams(
         try param_nodes.append(alloc, param.node);
         try param_spans.append(alloc, param.span);
 
+        self.expectOneOf(&[_]Token{ .rparen, .comma });
         switch (try self.peekToken()) {
             .rparen => break,
             .comma => self.advance(),
@@ -1154,9 +1214,11 @@ fn parseIf(
     const on_true_scope = try self.parseScope(alloc);
     var on_false_scope: SpannedNode = undefined;
 
+    self.expectOneOf(&[_]Token{.@"else"});
     if (self.peekToken() catch .invalid_byte == .@"else") {
         _ = try self.parseToken(.@"else");
 
+        self.expectOneOf(&[_]Token{.@"if"});
         if (self.peekToken() catch .invalid_byte == .@"if") {
             // TODO: does not need to reCurse
             const nested_if = try self.parseIf(alloc);
@@ -1220,6 +1282,7 @@ fn parseScope(
 
     const lbrace = try self.parseToken(.lbrace);
     while (true) {
+        self.expectOneOf(&[_]Token{ .rbrace, .semi });
         switch (try self.peekToken()) {
             .rbrace => break,
             .semi => {
@@ -1233,6 +1296,7 @@ fn parseScope(
         try stmt_nodes.append(alloc, stmt.node);
         try stmt_spans.append(alloc, stmt.span);
 
+        self.expectOneOf(&[_]Token{.rbrace});
         switch (try self.peekToken()) {
             .rbrace => {
                 has_trailing_semi = false;
@@ -1261,8 +1325,8 @@ fn parseStmt(
     alloc: std.mem.Allocator,
 ) !SpannedNode {
     // std.log.debug("parse stmt", .{});
-    const next = try self.peekToken();
-    return switch (next) {
+    self.expectOneOf(&[_]Token{.let});
+    return switch (try self.peekToken()) {
         .let => try self.parseDecl(alloc),
         else => try self.parseStmtExpr(alloc),
     };
@@ -1274,6 +1338,7 @@ fn parseStmtExpr(
 ) !SpannedNode {
     var lhs = try self.parseExpr(alloc);
 
+    self.expectOneOf(&[_]Token{.single_eq});
     if (try self.peekToken() == .single_eq) {
         _ = self.advance();
         const rhs = try self.parseCast(alloc);
