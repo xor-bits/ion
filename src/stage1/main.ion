@@ -4,7 +4,12 @@ let sign = fn(v: u32): u32;
 
 let nothing = fn(v: u32): u32 { v };
 
-let f = fn(a: u32 b: u32) {};
+let f = fn(
+    a: u32
+    b: u32
+): u32 {
+    a + b
+};
 
 let print = fn(s: []u8) {
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
@@ -28,16 +33,16 @@ let sleep = fn(sec: u32) {
 };
 
 let main = fn() {
-    let T = u32;
-    let mut arr: [4]T = undefined;
-    arr[0] = 4;
+    let T = u32
+    let mut arr: [4]T = undefined
+    arr[0] = 4
 
-    let arr = &arr;
+    "hello"
     
-    let a = 5;
-    let b = 6;
-    print("hello");
-    nothing(a + b + global);
+        let a = 5
+        let b =  6
+            print("hello") nothing(a + b + global)
+
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
     srand();
     let num = rand();

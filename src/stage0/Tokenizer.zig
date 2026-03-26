@@ -49,7 +49,7 @@ pub const Token = enum {
     int_lit,
     float_lit,
 
-    invalid_byte,
+    invalid_token,
     eof,
 
     pub fn isSimple(
@@ -63,7 +63,7 @@ pub const Token = enum {
             .char_lit,
             .int_lit,
             .float_lit,
-            .invalid_byte,
+            .invalid_token,
             .eof,
             => false,
             else => true,
@@ -131,6 +131,10 @@ pub const SpannedToken = struct {
     span: Span,
 };
 
+eof: SpannedToken = .{
+    .token = .eof,
+    .span = .{},
+},
 tokens: std.MultiArrayList(SpannedToken) = .{},
 source: []const u8 = "",
 cursor: u32 = 0,
@@ -162,6 +166,14 @@ pub fn run(
 
     while (self.next()) |tok| {
         try self.tokens.append(alloc, tok);
+    }
+
+    if (self.tokens.len != 0) {
+        const last_real_token = self.tokens.get(self.tokens.len - 1);
+        self.eof.span = .{
+            .start = last_real_token.span.end,
+            .end = last_real_token.span.end,
+        };
     }
 }
 
@@ -271,7 +283,7 @@ fn next(
                     '%' => .percent,
 
                     else => return .{
-                        .token = .invalid_byte,
+                        .token = .invalid_token,
                         .span = start_span.merge(span),
                     },
                 };

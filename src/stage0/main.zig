@@ -43,7 +43,13 @@ pub fn main() !u8 {
 
     var parser: Parser = .{ .tokenizer = &tokenizer };
     defer parser.deinit(alloc);
-    try parser.run(alloc);
+    parser.run(alloc) catch |err| switch (err) {
+        error.InvalidSyntax => {
+            parser.printErrors();
+            return 2;
+        },
+        else => return err,
+    };
 
     parser.dump();
 
@@ -97,6 +103,57 @@ pub fn Range(
             src: anytype,
         ) @TypeOf(src) {
             return src[self.start..self.end];
+        }
+
+        pub fn expandLine(
+            self: Self,
+            src: []const u8,
+        ) Self {
+            std.debug.assert(self.start <= self.end);
+            std.debug.assert(self.end <= src.len);
+
+            var start = self.start;
+            while (true) {
+                if (start == 0) break;
+                if (isNewline(src[start - 1])) break;
+                start -= 1;
+            }
+
+            var end = self.end;
+            while (true) {
+                if (end == src.len) break;
+                if (isNewline(src[end])) break;
+                end += 1;
+            }
+
+            return .{ .start = start, .end = end };
+        }
+
+        pub fn findLineCol(
+            self: Self,
+            src: []const u8,
+        ) [2]u32 {
+            const before_this = src[0..self.start];
+
+            var line_index: u32 = 0;
+            var col_index: u32 = 0;
+
+            for (before_this) |ch| {
+                if (ch == '\n') {
+                    line_index += 1;
+                    col_index = 0;
+                } else {
+                    col_index += 1;
+                }
+            }
+
+            return .{ line_index, col_index };
+        }
+
+        fn isNewline(
+            c: u8,
+        ) bool {
+            return c == '\n' or c == '\r';
         }
 
         pub fn splitLast(
