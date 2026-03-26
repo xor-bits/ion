@@ -2,10 +2,6 @@ const std = @import("std");
 const Range = @import("main.zig").Range;
 
 pub const Token = enum {
-    ident,
-    line_comment,
-    block_comment,
-
     let,
     mut,
     @"fn",
@@ -44,6 +40,7 @@ pub const Token = enum {
     slash,
     percent,
 
+    ident,
     str_lit,
     char_lit,
     int_lit,
@@ -57,8 +54,6 @@ pub const Token = enum {
     ) bool {
         return switch (self) {
             .ident,
-            .line_comment,
-            .block_comment,
             .str_lit,
             .char_lit,
             .int_lit,
