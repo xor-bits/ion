@@ -380,6 +380,12 @@ fn next(
 
                 if (dot_found and result.@"0" == '.') break;
                 if (result.@"0" == '.') {
+                    // the character after a dot has to
+                    // be a digit for the dot to be accpected
+                    //
+                    // this is to parse 3..4 as a <3> <..> <4> instead of <3.> . <4>
+                    const digit_after_dot, _ = self.peekNth(1) orelse break;
+                    if (!std.ascii.isAlphanumeric(digit_after_dot)) break;
                     dot_found = true;
                 } else if (!std.ascii.isAlphanumeric(result.@"0")) break;
                 ch, span = result;
@@ -435,10 +441,17 @@ fn pop(
 fn peek(
     self: *@This(),
 ) ?struct { u8, Span } {
-    if (self.cursor >= self.source.len) return null;
+    return self.peekNth(0);
+}
+
+fn peekNth(
+    self: *@This(),
+    n: u32,
+) ?struct { u8, Span } {
+    if (self.cursor + n >= self.source.len) return null;
     return .{
         self.source[self.cursor],
-        Span{ .start = self.cursor, .end = self.cursor + 1 },
+        Span{ .start = self.cursor + n, .end = self.cursor + n + 1 },
     };
 }
 

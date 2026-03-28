@@ -46,7 +46,8 @@ pub fn main() !u8 {
     parser.run(alloc) catch |err| switch (err) {
         error.InvalidSyntax => {
             parser.printErrors();
-            return 2;
+            return err;
+            // return 2;
         },
         else => return err,
     };

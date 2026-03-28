@@ -37,6 +37,8 @@ let main = fn() {
     let mut arr: [4]T = undefined
     arr[0] = 4
 
+    let range = 4..5
+
     // + 4
 
     let slice: []T = &arr

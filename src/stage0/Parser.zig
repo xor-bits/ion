@@ -170,6 +170,8 @@ pub const BinaryOp = enum {
 
     field,
 
+    range,
+
     pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .add => "+",
@@ -187,6 +189,8 @@ pub const BinaryOp = enum {
             .ge => ">=",
 
             .field => ".",
+
+            .range => "..",
         }});
     }
 };
@@ -341,11 +345,7 @@ fn allocNodes(
 fn peek(
     self: *const @This(),
 ) SpannedToken {
-    if (self.current >= self.tokenizer.tokens.len) {
-        @branchHint(.cold);
-        return self.tokenizer.eof;
-    }
-    return self.tokenizer.tokens.get(self.current);
+    return self.peekNth(0);
 }
 
 fn peekNth(
@@ -724,12 +724,44 @@ fn parseCast(
     alloc: std.mem.Allocator,
 ) Error!SpannedNode {
     // std.log.debug("parse cast", .{});
-    var lhs: SpannedNode = try self.parseSum(alloc);
+    var lhs: SpannedNode = try self.parseRange(alloc);
 
     while (true) {
         self.expectOneOf(&[_]Token{.as});
         const op = switch (self.peekToken()) {
             .as => BinaryOp.as,
+            else => break,
+        };
+        _ = self.advance();
+        const rhs = try self.parseRange(alloc);
+
+        // FIXME: this is a workaround to a bug in the Zig compiler
+        // https://github.com/ziglang/zig/issues/24627
+        const lhs_copy = lhs;
+        lhs = .{
+            .node = .{ .binary_op = .{
+                .lhs = try self.allocNode(alloc, lhs_copy),
+                .op = op,
+                .rhs = try self.allocNode(alloc, rhs),
+            } },
+            .span = lhs_copy.span.merge(rhs.span),
+        };
+    }
+
+    return lhs;
+}
+
+fn parseRange(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) Error!SpannedNode {
+    // std.log.debug("parse range", .{});
+    var lhs: SpannedNode = try self.parseSum(alloc);
+
+    while (true) {
+        self.expectOneOf(&[_]Token{.double_dot});
+        const op = switch (self.peekToken()) {
+            .double_dot => BinaryOp.range,
             else => break,
         };
         _ = self.advance();

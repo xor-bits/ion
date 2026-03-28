@@ -143,9 +143,9 @@ fn findVariable(
     var idx: usize = 0;
     var max_depth: u8 = 0;
 
-    std.debug.print("find {s}\n", .{
-        name_str,
-    });
+    // std.debug.print("find {s}\n", .{
+    //     name_str,
+    // });
 
     if (std.mem.eql(u8, name_str, "_")) return .{
         .ident = name,
@@ -191,10 +191,10 @@ fn createVariable(
         .version = 0,
     };
 
-    std.debug.print("create {f} @{}\n", .{
-        new.print(self.source()),
-        self.depth,
-    });
+    // std.debug.print("create {f} @{}\n", .{
+    //     new.print(self.source()),
+    //     self.depth,
+    // });
 
     try self.variable_version_map.append(alloc, new);
     return new;
@@ -288,6 +288,17 @@ pub fn run(
         \\            return .{ .ptr = @ptrCast(raw.ptr), .len = raw.len };
         \\        }
         \\    };
+        \\}
+        \\
+        \\pub fn BuiltinRange(comptime T: type) type {
+        \\    return struct {
+        \\        start: T,
+        \\        end: T,
+        \\    };
+        \\}
+        \\
+        \\pub fn builtin_range(start: anytype, end: @TypeOf(start)) BuiltinRange(@TypeOf(start)) {
+        \\    return .{ .start = start, .end = end };
         \\}
         \\
     );
@@ -460,6 +471,22 @@ pub fn convertExpr(
                     v.lhs,
                 );
                 try writer.print(")", .{});
+            } else if (v.op == .range) {
+                try writer.print("builtin_range(", .{});
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.rhs,
+                );
+                try writer.print(",", .{});
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.lhs,
+                );
+                try writer.print(")", .{});
             } else {
                 try self.convertExpr(
                     alloc,
@@ -480,7 +507,7 @@ pub fn convertExpr(
                     .gt => ">",
                     .ge => ">=",
                     .field => ".",
-                    .as => unreachable,
+                    .range, .as => unreachable,
                 }});
                 try self.convertExpr(
                     alloc,
