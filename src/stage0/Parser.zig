@@ -198,11 +198,13 @@ pub const BinaryOp = enum {
 pub const UnaryOp = enum {
     neg,
     not,
+    deref,
 
     pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .neg => "-",
             .not => "!",
+            .deref => "*",
         }});
     }
 };
@@ -905,17 +907,37 @@ fn parseChain(
             .single_dot => {
                 // std.log.debug("parse field_acc", .{});
                 self.advance();
-                const ident = try self.parseToken(.ident);
-                // FIXME: this is a workaround to a bug in the Zig compiler
-                // https://github.com/ziglang/zig/issues/24627
-                const lhs_copy = lhs;
-                lhs = .{
-                    .node = .{ .field_acc = .{
-                        .val = try self.allocNode(alloc, lhs_copy),
-                        .ident = ident,
-                    } },
-                    .span = lhs_copy.span.merge(ident),
-                };
+
+                self.expectOneOf(&[_]Token{ .ident, .asterisk });
+                switch (self.peekToken()) {
+                    .ident => {
+                        const ident = try self.parseToken(.ident);
+                        // FIXME: this is a workaround to a bug in the Zig compiler
+                        // https://github.com/ziglang/zig/issues/24627
+                        const lhs_copy = lhs;
+                        lhs = .{
+                            .node = .{ .field_acc = .{
+                                .val = try self.allocNode(alloc, lhs_copy),
+                                .ident = ident,
+                            } },
+                            .span = lhs_copy.span.merge(ident),
+                        };
+                    },
+                    .asterisk => {
+                        const deref = try self.parseToken(.asterisk);
+                        // FIXME: this is a workaround to a bug in the Zig compiler
+                        // https://github.com/ziglang/zig/issues/24627
+                        const lhs_copy = lhs;
+                        lhs = .{
+                            .node = .{ .unary_op = .{
+                                .val = try self.allocNode(alloc, lhs_copy),
+                                .op = .deref,
+                            } },
+                            .span = lhs_copy.span.merge(deref),
+                        };
+                    },
+                    else => return error.InvalidSyntax,
+                }
             },
             .lbracket => {
                 // std.log.debug("parse index_acc", .{});

@@ -518,16 +518,27 @@ pub fn convertExpr(
             }
         },
         .unary_op => |v| {
-            try writer.print("{s}", .{switch (v.op) {
-                .neg => "~",
-                .not => "!",
-            }});
-            try self.convertExpr(
-                alloc,
-                writer,
-                name_hint,
-                v.val,
-            );
+            if (v.op == .deref) {
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.val,
+                );
+                try writer.writeAll(".*");
+            } else {
+                try writer.print("{s}", .{switch (v.op) {
+                    .neg => "~",
+                    .not => "!",
+                    .deref => unreachable,
+                }});
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.val,
+                );
+            }
         },
         .call => |v| {
             try writer.print("(", .{});

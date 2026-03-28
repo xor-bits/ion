@@ -15,6 +15,11 @@ let print = fn(s: []u8) {
     let printf = extern fn(s: *u8, ..): c_int @ "printf";
     let res = printf("%.*s\n\x00".ptr, s.len, s.ptr);
 };
+
+let printi = fn(i: u32) {
+    let printf = extern fn(s: *u8, ..): c_int @ "printf";
+    printf("num: %lu\n\x00".ptr, i);
+};
  
 let rand = fn(): c_int {
     let rand = extern fn(): c_int @ "rand";
@@ -36,12 +41,13 @@ let main = fn() {
     let T = u32
     let mut arr: [4]T = undefined
     arr[0] = 4
+    printi(arr[0])
 
-    let range = 4..5
-
-    // + 4
-
-    let slice: []T = &arr
+    let range = 4..5;
+    let slice: []T = &arr;
+    let elem: *mut T = &arr[0];
+    elem.* = 5;
+    printi(arr[0])
 
     // slice[0] = 5
 

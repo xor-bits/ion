@@ -35,12 +35,14 @@ pub fn main() !u8 {
     const destin_file = try std.fs.cwd().createFile(destin_path, .{});
     defer destin_file.close();
 
+    std.debug.print("running lexer", .{});
     var tokenizer: Tokenizer = .{ .source_file = source_file };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
     tokenizer.dump();
 
+    std.debug.print("running parser", .{});
     var parser: Parser = .{ .tokenizer = &tokenizer };
     defer parser.deinit(alloc);
     parser.run(alloc) catch |err| switch (err) {
@@ -66,6 +68,7 @@ pub fn main() !u8 {
 
     // sema.dump();
 
+    std.debug.print("running transpiler", .{});
     var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
     defer codegen.deinit(alloc);
     try codegen.run(alloc);
