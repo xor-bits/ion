@@ -521,6 +521,12 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
+        .scope => return try self.convertScope(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        // .param => {},
         .array => return try self.convertArray(
             alloc,
             name_hint,
