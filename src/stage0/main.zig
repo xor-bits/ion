@@ -3,6 +3,7 @@ const std = @import("std");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 const IrGenerator = @import("IrGenerator.zig");
+const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
 // const Codegen = @import("Codegen.zig");
 
@@ -60,6 +61,12 @@ pub fn main() !u8 {
     try ir_gen.run(alloc);
 
     ir_gen.dump();
+
+    var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
+    defer vm.deinit(alloc);
+    try vm.run(alloc);
+
+    vm.dump();
 
     // var sema: Sema = .{ .ir_gen = &ir_gen };
     // defer sema.deinit(alloc);

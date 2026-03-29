@@ -11,6 +11,7 @@ pub const Token = enum {
     @"else",
     @"for",
     loop,
+    comptime_print,
 
     semi,
     colon,
@@ -119,6 +120,7 @@ const Keyword = enum {
     @"else",
     @"for",
     loop,
+    comptime_print,
 };
 
 pub const Span = Range(u32, 0);

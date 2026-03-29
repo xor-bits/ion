@@ -547,7 +547,7 @@ pub fn convertExpr(
                     .sub => "-%",
                     .mul => "*%",
                     .div => "/%",
-                    .rem => "%",
+                    .mod => "%",
                     .eq => "==",
                     .neq => "!=",
                     .lt => "<",

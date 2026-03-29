@@ -34,6 +34,10 @@ pub const Node = union(enum) {
         expr: NodeId,
         // semi: Span,
     },
+    comptime_print: struct {
+        // comptime_print: Span,
+        expr: NodeId,
+    },
     @"if": struct {
         // @"if": Span,
         check_expr: NodeId,
@@ -158,7 +162,7 @@ pub const BinaryOp = enum {
     sub,
     mul,
     div,
-    rem,
+    mod,
     as,
 
     eq,
@@ -178,7 +182,7 @@ pub const BinaryOp = enum {
             .sub => "-",
             .mul => "*",
             .div => "/",
-            .rem => "%",
+            .mod => "%",
             .as => "as",
 
             .eq => "==",
@@ -835,7 +839,7 @@ fn parseProd(
         const op = switch (self.peekToken()) {
             .asterisk => BinaryOp.mul,
             .slash => BinaryOp.div,
-            .percent => BinaryOp.rem,
+            .percent => BinaryOp.mod,
             else => break,
         };
         _ = self.advance();
@@ -1448,7 +1452,22 @@ fn parseStmt(
     self.expectOneOf(&[_]Token{.let});
     return switch (self.peekToken()) {
         .let => try self.parseDecl(alloc),
+        .comptime_print => try self.parseComptimePrint(alloc),
         else => try self.parseStmtExpr(alloc),
+    };
+}
+
+fn parseComptimePrint(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !SpannedNode {
+    const comptime_print = try self.parseToken(.comptime_print);
+    const expr = try self.parseExpr(alloc);
+    return .{
+        .span = comptime_print.merge(expr.span),
+        .node = .{ .comptime_print = .{
+            .expr = try self.allocNode(alloc, expr),
+        } },
     };
 }
 
@@ -1526,6 +1545,10 @@ fn print(
                 v.mut,
                 v.ident.read(self.tokenizer.source),
             });
+            self.print(v.expr, depth + 1);
+        },
+        .comptime_print => |v| {
+            std.debug.print("comptime_print:\n", .{});
             self.print(v.expr, depth + 1);
         },
         .@"if" => |v| {

@@ -13,6 +13,7 @@ const log = std.log.scoped(.irgen);
 //
 
 pub const Value = enum(u32) {
+    type_type,
     void_type,
     bool_type,
     u8_type,
@@ -30,7 +31,6 @@ pub const Value = enum(u32) {
     c_int_type,
     c_char_type,
     c_long_type,
-    c_longdouble_type,
     c_longlong_type,
     c_short_type,
     c_uint_type,
@@ -43,9 +43,9 @@ pub const Value = enum(u32) {
     undefined,
     _,
 
-    const builtin_count = @intFromEnum(Value.undefined) + 1;
+    pub const builtin_count = @intFromEnum(Value.undefined) + 1;
 
-    pub fn asIndex(self: @This()) ?Instr.Index {
+    pub fn asIndex(self: @This()) ?Instr.Id {
         return switch (self) {
             _ => @enumFromInt(@intFromEnum(self) - builtin_count),
             else => null,
@@ -62,6 +62,7 @@ pub const Value = enum(u32) {
 };
 
 pub const BuiltinVariable = enum {
+    type,
     void,
     bool,
     u8,
@@ -80,7 +81,6 @@ pub const BuiltinVariable = enum {
     c_int,
     c_char,
     c_long,
-    c_longdouble,
     c_longlong,
     c_short,
     c_uint,
@@ -96,10 +96,22 @@ pub const BuiltinVariable = enum {
 /// index into the `extras` array
 pub const Extra = enum(u32) {
     _,
+
+    pub const Proto = extern struct {
+        return_type: Value,
+        /// number of `Param` following this
+        /// `Proto` in the `extras` array
+        param_count: u32,
+    };
+
+    pub const Param = extern struct {
+        val: Value,
+    };
 };
 
 pub const Instr = union(enum) {
-    pub const Index = enum(u32) {
+    pub const Id = enum(u32) {
+        start,
         _,
 
         pub fn asValue(self: @This()) Value {
@@ -148,27 +160,23 @@ pub const Instr = union(enum) {
     /// only usable in a struct
     decl: struct {
         name: Span,
-        block_end: Instr.Index,
+        block_end: Instr.Id,
     },
     /// creates a new anonymous function
     func: struct {
-        proto_block_end: Instr.Index,
-        body_block_end: Instr.Index,
+        proto: Value,
+        body_block_end: Instr.Id,
     },
     /// creates a new function type
     proto: struct {
-        block_end: Instr.Index,
-    },
-    /// declares a new parameter for a function type
-    /// only usable in the proto block
-    param: struct {
-        ty: Value,
+        /// index into the `extras` array
+        extra: Extra,
     },
     /// in a struct: completes the struct
     /// in a proto block: declares the function return type and completes the proto
     /// in code: returns from a block with a value
     @"break": struct {
-        block: Instr.Index,
+        block: Instr.Id,
         val: Value,
     },
     /// tells which source line:col the next instructions are from
@@ -180,14 +188,18 @@ pub const Instr = union(enum) {
     dbg_name: struct {
         name: Span,
     },
+    /// prints a value at compile time
+    dbg_print: struct {
+        val: Value,
+    },
     /// a block of instructions which can return with a value
     block: struct {
-        block_end: Instr.Index,
+        block_end: Instr.Id,
     },
     conditional: struct {
         boolean: Value,
-        on_true_block_end: Instr.Index,
-        on_false_block_end: Instr.Index,
+        on_true_block_end: Instr.Id,
+        on_false_block_end: Instr.Id,
     },
     // unconditional: struct {
     //     dst: Instr.Index,
@@ -258,7 +270,7 @@ fn popScope(
 
 fn nextInstr(
     self: *@This(),
-) Instr.Index {
+) Instr.Id {
     return @enumFromInt(self.instrs.len);
 }
 
@@ -266,7 +278,7 @@ fn pushInstr(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr,
-) Error!Instr.Index {
+) Error!Instr.Id {
     const id = try self.instrs.addOne(alloc);
     self.instrs.set(id, instr);
     return @enumFromInt(id);
@@ -279,6 +291,10 @@ fn pushInstrGetValue(
 ) Error!Value {
     const instr_addr = try self.pushInstr(alloc, instr);
     return instr_addr.asValue();
+}
+
+fn overwriteInstr(self: *@This(), idx: Instr.Id, instr: Instr) void {
+    self.instrs.set(@intFromEnum(idx), instr);
 }
 
 pub fn run(
@@ -305,17 +321,11 @@ pub fn run(
     self.main = self.symbols.findVar("main") orelse {
         return error.MainFunctionMissing;
     };
-    // try self.builder.pushInstr(alloc, .{ .decl_entrypoint = .{
-    //     .func = main,
-    // } });
-
-    // const ret = try self.convertVoidLit(alloc);
-    // try self.popBlock(
-    //     alloc,
-    //     .{ .ret = ret },
-    //     null,
-    //     root_name_hint,
-    // );
+    _ = try self.pushInstr(alloc, .{ .call = .{
+        .func = self.main,
+        .argc = 0,
+        .argv = @enumFromInt(0),
+    } });
 }
 
 pub fn dump(
@@ -329,7 +339,7 @@ pub fn dump(
 
 fn dumpBlock(
     self: *@This(),
-    start: Instr.Index,
+    start: Instr.Id,
     indent: usize,
 ) void {
     var cur = start;
@@ -380,24 +390,26 @@ fn dumpBlock(
                 cur = v.block_end;
             },
             .func => |v| {
-                std.debug.print("func(proto={{\n", .{});
+                std.debug.print("func(proto={f}, body={{\n", .{v.proto});
                 self.dumpBlock(cur, indent + 1);
-                for (0..indent) |_| std.debug.print("    ", .{});
-                std.debug.print("}}, body={{\n", .{});
-                self.dumpBlock(v.proto_block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
                 cur = v.body_block_end;
             },
             .proto => |v| {
-                std.debug.print("proto(proto={{\n", .{});
-                self.dumpBlock(cur, indent + 1);
-                for (0..indent) |_| std.debug.print("    ", .{});
-                std.debug.print("}})\n", .{});
-                cur = v.block_end;
-            },
-            .param => |v| {
-                std.debug.print("param(type={f})\n", .{v.ty});
+                const extra: Extra.Proto = @bitCast(self.extras.items[@intFromEnum(v.extra)..][0..2].*);
+                const params: []const Extra.Param = @ptrCast(self.extras.items[@intFromEnum(v.extra) + 2 ..][0..extra.param_count]);
+
+                std.debug.print("proto(return_type={f}, params=[", .{
+                    extra.return_type,
+                });
+                if (params.len != 0) {
+                    std.debug.print("{f}", .{params[0].val});
+                    for (params[1..]) |param| {
+                        std.debug.print(", {f}", .{param.val});
+                    }
+                }
+                std.debug.print("])\n", .{});
             },
             .@"break" => |v| {
                 std.debug.print("break(block=%{}, value={f})\n", .{ @intFromEnum(v.block), v.val });
@@ -408,6 +420,9 @@ fn dumpBlock(
             },
             .dbg_name => |v| {
                 std.debug.print("dbg_name(name=\"{s}\")\n", .{v.name.read(self.source())});
+            },
+            .dbg_print => |v| {
+                std.debug.print("dbg_print(val={f})\n", .{v.val});
             },
             .block => |v| {
                 std.debug.print("block(proto={{\n", .{});
@@ -642,76 +657,57 @@ pub fn convertIf(
     return if_block.asValue();
 }
 
-fn convertProtoInline(
-    self: *@This(),
-    alloc: std.mem.Allocator,
-    name_hint: *const NameHint,
-    node_id: NodeId,
-    block: Instr.Index,
-) Error!void {
-    const proto = self.nodes()[node_id].proto;
-
-    const name_hint_proto = name_hint.push("proto");
-    const name_hint_param = name_hint_proto.push("param");
-    for (proto.params.start..proto.params.end) |param_node_id| {
-        const param = self.nodes()[param_node_id].param;
-        const param_name = param.ident.read(self.source());
-        const param_type = try self.convertExpr(
-            alloc,
-            &name_hint_param.push(param_name),
-            param.type,
-        );
-
-        const param_value = try self.pushInstr(alloc, .{ .param = .{
-            .ty = param_type,
-        } });
-        try self.symbols.createVar(alloc, param_name, param_value.asValue());
-    }
-
-    if (proto.return_ty_expr) |expr_node_id| {
-        const name_hint_ret = name_hint_proto.push("ret");
-        const return_type = try self.convertExpr(
-            alloc,
-            &name_hint_ret,
-            expr_node_id,
-        );
-        _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = block,
-            .val = return_type,
-        } });
-    } else {
-        _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = block,
-            .val = Value.void_type,
-        } });
-    }
-}
-
 pub fn convertProto(
     self: *@This(),
     alloc: std.mem.Allocator,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!Value {
-    const proto_block = try self.pushInstr(alloc, .{ .proto = undefined });
+    const proto = self.nodes()[node_id].proto;
 
     try self.pushScope(alloc);
     defer self.popScope();
 
-    try self.convertProtoInline(
-        alloc,
-        name_hint,
-        node_id,
-        proto_block,
-    );
+    const extra: Extra = @enumFromInt(self.extras.items.len);
+    const proto_extra = try self.extras.addManyAsArray(alloc, 2);
+    const params_extra = try self.extras.addManyAsSlice(alloc, proto.params.len());
 
-    const proto_block_end = self.nextInstr();
+    const name_hint_proto = name_hint.push("proto");
+    const name_hint_param = name_hint_proto.push("param");
+    for (0..proto.params.len()) |i| {
+        const param = self.nodes()[proto.params.start + i].param;
+        const param_name = param.ident.read(self.source());
+        const param_type = try self.convertExpr(
+            alloc,
+            &name_hint_param.push(param_name),
+            param.type,
+        );
+        const param_value = try self.pushInstrGetValue(alloc, .{ .as = .{
+            .ty = param_type,
+            .val = .undefined,
+        } });
 
-    self.instrs.set(@intFromEnum(proto_block), .{ .proto = .{
-        .block_end = proto_block_end,
+        try self.symbols.createVar(alloc, param_name, param_value);
+        params_extra[i] = @intFromEnum(param_type);
+    }
+
+    const return_type = if (proto.return_ty_expr) |expr_node_id| b: {
+        const name_hint_ret = name_hint_proto.push("ret");
+        break :b try self.convertExpr(
+            alloc,
+            &name_hint_ret,
+            expr_node_id,
+        );
+    } else Value.void_type;
+
+    proto_extra.* = @bitCast(Extra.Proto{
+        .param_count = proto.params.len(),
+        .return_type = return_type,
+    });
+
+    return self.pushInstrGetValue(alloc, .{ .proto = .{
+        .extra = extra,
     } });
-
-    return proto_block.asValue();
 }
 
 pub fn convertFn(
@@ -720,51 +716,49 @@ pub fn convertFn(
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!Value {
-    const func = self.nodes()[node_id].@"fn";
-    const proto = self.nodes()[func.proto].proto;
+    const func_node = self.nodes()[node_id].@"fn";
+    const proto_node = self.nodes()[func_node.proto].proto;
 
     try self.pushScope(alloc);
     defer self.popScope();
 
-    const func_block = try self.pushInstr(alloc, .{ .func = undefined });
-
-    try self.convertProtoInline(
+    const proto = try self.convertProto(
         alloc,
         name_hint,
-        func.proto,
-        func_block,
+        func_node.proto,
     );
-    const proto_block_end = self.nextInstr();
 
-    const name_hint_fn = name_hint.push(if (proto.@"extern") "symexpr" else "fn");
-    if (proto.@"extern") {
+    const func_block = try self.pushInstr(alloc, .{ .func = undefined });
+    const func_block_start = self.nextInstr();
+
+    const name_hint_fn = name_hint.push(if (proto_node.@"extern") "symexpr" else "fn");
+    if (proto_node.@"extern") {
         const symbol = try self.convertExpr(
             alloc,
             &name_hint_fn,
-            func.scope_or_symexpr,
+            func_node.scope_or_symexpr,
         );
         _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = func_block,
+            .block = func_block_start,
             .val = symbol,
         } });
     } else {
         const return_value = try self.convertScope(
             alloc,
             &name_hint_fn,
-            func.scope_or_symexpr,
+            func_node.scope_or_symexpr,
         );
         _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = func_block,
+            .block = func_block_start,
             .val = return_value,
         } });
     }
     const body_block_end = self.nextInstr();
 
-    self.instrs.set(@intFromEnum(func_block), .{ .func = .{
-        .proto_block_end = proto_block_end,
+    self.overwriteInstr(func_block, .{ .func = .{
+        .proto = proto,
         .body_block_end = body_block_end,
     } });
-
     return func_block.asValue();
 }
 
@@ -1005,6 +999,7 @@ pub fn convertAccess(
 
     if (std.meta.stringToEnum(BuiltinVariable, var_name)) |builtin| {
         return switch (builtin) {
+            .type => Value.type_type,
             .void => Value.void_type,
             .bool => Value.bool_type,
             .u8 => Value.u8_type,
@@ -1023,7 +1018,6 @@ pub fn convertAccess(
             .c_int => Value.c_int_type,
             .c_char => Value.c_char_type,
             .c_long => Value.c_long_type,
-            .c_longdouble => Value.c_longdouble_type,
             .c_longlong => Value.c_longlong_type,
             .c_short => Value.c_short_type,
             .c_uint => Value.c_uint_type,
