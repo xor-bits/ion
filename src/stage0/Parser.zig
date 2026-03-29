@@ -219,33 +219,21 @@ pub const Error = error{
 };
 
 pub const ErrorMsg = struct {
-    token: SpannedToken,
+    found: Token,
     expected: std.EnumSet(Token),
-    src: []const u8,
 
     pub fn format(
         self: @This(),
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
-        const line_src = self.token.span.expandLine(self.src).read(self.src);
-        const line, const col = self.token.span.findLineCol(self.src);
-
-        try writer.print("<root>:{}:{}: ", .{
-            line + 1,
-            col + 1,
-        });
-        try writer.print("error: unexpected token: {f}, expected one of: {f}\n", .{
-            self.token.token,
+        try writer.print("unexpected token: {f}, expected one of: {f}", .{
+            self.found,
             EnumSetFmt{ .set = self.expected },
         });
-        try writer.writeAll(line_src);
-        try writer.writeByte('\n');
-
-        try writer.splatByteAll(' ', col);
-        try writer.writeByte('^');
-        try writer.splatByteAll('~', self.token.span.len() -| 1);
     }
 };
+
+pub const Diagnostic = @import("main.zig").Diagnostic(ErrorMsg);
 
 const EnumSetFmt = struct {
     set: std.EnumSet(Token),
@@ -296,11 +284,16 @@ pub fn run(
 pub fn printErrors(
     self: *const @This(),
 ) void {
-    std.debug.print("{f}\n", .{ErrorMsg{
-        .token = self.peek(),
-        .expected = self.expected,
-        .src = self.source(),
-    }});
+    const tok = self.peek();
+    const msg = Diagnostic{
+        .src = .fromSpan(tok.span, self.source()),
+        .kind = .err,
+        .msg = .{
+            .expected = self.expected,
+            .found = tok.token,
+        },
+    };
+    std.debug.print("{f}\n", .{msg});
 }
 
 fn source(

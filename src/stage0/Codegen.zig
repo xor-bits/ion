@@ -71,6 +71,24 @@ pub const BuiltinVariable = enum {
     undefined,
 };
 
+pub const ErrorMsg = struct {
+    span: Span,
+    kind: union(enum) {
+        variable_not_found,
+    },
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (self.kind) {
+            .variable_not_found => try writer.print("variable not found", .{}),
+        }
+    }
+};
+
+pub const Diagnostic = @import("main.zig").Diagnostic(ErrorMsg);
+
 pub const Error = error{
     OutOfMemory,
     WriteFailed,
@@ -78,6 +96,7 @@ pub const Error = error{
 };
 
 variable_version_map: std.MultiArrayList(Variable) = .{},
+errors: std.ArrayList(ErrorMsg) = .{},
 depth: u8 = 0,
 scope_id: u32 = 0,
 
@@ -88,17 +107,31 @@ pub fn deinit(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) void {
+    self.errors.deinit(alloc);
     self.variable_version_map.deinit(alloc);
 }
 
+pub fn printErrors(
+    self: *const @This(),
+) void {
+    for (self.errors.items) |err| {
+        const diag = Diagnostic{
+            .kind = .err,
+            .msg = err,
+            .src = .fromSpan(err.span, self.source()),
+        };
+        std.debug.print("{f}\n", .{diag});
+    }
+}
+
 fn nodes(
-    self: *@This(),
+    self: *const @This(),
 ) []const Node {
     return self.parser.nodes.items;
 }
 
 fn source(
-    self: *@This(),
+    self: *const @This(),
 ) []const u8 {
     return self.parser.tokenizer.source;
 }
@@ -131,6 +164,7 @@ fn popScope(
 
 fn findVariable(
     self: *@This(),
+    alloc: std.mem.Allocator,
     name: Span,
 ) Error!Variable {
     const name_str = name.read(self.source());
@@ -171,7 +205,13 @@ fn findVariable(
         idx = i;
     }
 
-    if (!found) return Error.VariableNotFound;
+    if (!found) {
+        try self.errors.append(alloc, .{
+            .span = name,
+            .kind = .variable_not_found,
+        });
+        return Error.VariableNotFound;
+    }
 
     return slice.get(idx);
 }
@@ -181,11 +221,19 @@ fn createVariable(
     alloc: std.mem.Allocator,
     name: Span,
 ) Error!Variable {
-    const new: Variable = if (self.findVariable(name)) |previous| .{
+    const existing: ?Variable = self.findVariable(alloc, name) catch |err| switch (err) {
+        error.VariableNotFound => b: {
+            std.debug.assert(self.errors.pop() != null);
+            break :b null;
+        },
+        else => return err,
+    };
+
+    const new: Variable = if (existing) |previous| .{
         .ident = name,
         .depth = self.depth,
         .version = previous.version + 1,
-    } else |_| .{
+    } else .{
         .ident = name,
         .depth = self.depth,
         .version = 0,
@@ -311,6 +359,8 @@ pub fn run(
     );
 
     try writer.flush();
+
+    return error.VariableNotFound;
 }
 
 pub fn convertStructContents(
@@ -610,7 +660,7 @@ pub fn convertExpr(
             });
         },
         .access => |v| {
-            const variable = try self.findVariable(v.ident);
+            const variable = try self.findVariable(alloc, v.ident);
             try writer.print("{f}", .{variable.print(self.source())});
         },
         .scope => try self.convertScope(

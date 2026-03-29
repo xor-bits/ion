@@ -35,23 +35,22 @@ pub fn main() !u8 {
     const destin_file = try std.fs.cwd().createFile(destin_path, .{});
     defer destin_file.close();
 
-    std.debug.print("running lexer", .{});
+    std.debug.print("running lexer\n", .{});
     var tokenizer: Tokenizer = .{ .source_file = source_file };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
     tokenizer.dump();
 
-    std.debug.print("running parser", .{});
+    std.debug.print("running parser\n", .{});
     var parser: Parser = .{ .tokenizer = &tokenizer };
     defer parser.deinit(alloc);
     parser.run(alloc) catch |err| switch (err) {
-        error.InvalidSyntax => {
+        error.OutOfMemory => return err,
+        else => {
             parser.printErrors();
-            return err;
-            // return 2;
+            return 2;
         },
-        else => return err,
     };
 
     parser.dump();
@@ -68,10 +67,16 @@ pub fn main() !u8 {
 
     // sema.dump();
 
-    std.debug.print("running transpiler", .{});
+    std.debug.print("running transpiler\n", .{});
     var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
     defer codegen.deinit(alloc);
-    try codegen.run(alloc);
+    codegen.run(alloc) catch |err| switch (err) {
+        error.OutOfMemory, error.WriteFailed => return err,
+        else => {
+            codegen.printErrors();
+            return 3;
+        },
+    };
 
     return 0;
 }
@@ -219,3 +224,63 @@ pub const NameHint = struct {
         return name;
     }
 };
+
+pub const Kind = enum {
+    err,
+
+    pub fn str(self: @This()) []const u8 {
+        return switch (self) {
+            .err => "error",
+        };
+    }
+};
+
+pub fn Diagnostic(comptime Msg: type) type {
+    return struct {
+        src: struct {
+            file: []const u8,
+            code: []const u8,
+            line: u32,
+            col: u32,
+            len: u32,
+
+            pub fn fromSpan(
+                span: Tokenizer.Span,
+                src: []const u8,
+            ) @This() {
+                const code = span.expandLine(src).read(src);
+                const line, const col = span.findLineCol(src);
+                return .{
+                    .file = "<root>",
+                    .code = code,
+                    .line = line,
+                    .col = col,
+                    .len = span.len(),
+                };
+            }
+        },
+        msg: Msg,
+        kind: Kind,
+
+        pub fn format(
+            self: @This(),
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
+            try writer.print("{s}:{}:{}: ", .{
+                self.src.file,
+                self.src.line + 1,
+                self.src.col + 1,
+            });
+            try writer.print("{s}: {f}\n", .{
+                self.kind.str(),
+                self.msg,
+            });
+            try writer.writeAll(self.src.code);
+            try writer.writeByte('\n');
+
+            try writer.splatByteAll(' ', self.src.col);
+            try writer.writeByte('^');
+            try writer.splatByteAll('~', self.src.len -| 1);
+        }
+    };
+}

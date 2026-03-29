@@ -43,6 +43,8 @@ let main = fn() {
     arr[0] = 4
     printi(arr[0])
 
+    let error = unknown;
+
     let range = 4..5;
     let slice: []T = &arr;
     let elem: *mut T = &arr[0];
