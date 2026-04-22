@@ -33,6 +33,10 @@ let srand = fn() {
 }
 
 let sleep = fn(sec: u32) {
+    // `sleep` is not a C standard library function,
+    // so it might or might not work on Windows.
+    // Apparently Zig adds a fake `sleep` function to its
+    // Windows libc to make it work, but I cannot test this.
     let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
     sleep(sec);
 }
