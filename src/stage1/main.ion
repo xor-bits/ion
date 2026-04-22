@@ -37,19 +37,35 @@ let sleep = fn(sec: u32) {
     sleep(sec);
 }
 
+let malloc = fn(bytes: usize): *mut u8 {
+    let malloc = extern fn(size: usize): *mut u8 @ "malloc";
+    malloc(bytes)
+}
+
 let main = fn() {
     let T = u32
     let mut arr: [4]T = undefined
     arr[0] = 4
     printi(arr[0])
 
-    let error = unknown;
+    let v = {
+        let x = 5;
+        x + x
+    }
+
+    // $
+    // let error = unknown;
+    // let n: u32 = "hello"
 
     let range = 4..5;
     let slice: []T = &arr;
     let elem: *mut T = &arr[0];
     elem.* = 5;
     printi(arr[0])
+
+    let ptr = malloc(1)
+    ptr.* = 6
+    printi(ptr.*)
 
     // slice[0] = 5
 

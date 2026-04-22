@@ -359,8 +359,6 @@ pub fn run(
     );
 
     try writer.flush();
-
-    return error.VariableNotFound;
 }
 
 pub fn convertStructContents(
