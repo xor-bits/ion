@@ -786,11 +786,10 @@ fn parseSum(
     var lhs: SpannedNode = try self.parseProd(alloc);
 
     while (true) {
-        self.expectOneOf(&[_]Token{ .asterisk, .slash, .percent });
+        self.expectOneOf(&[_]Token{ .plus, .minus });
         const op = switch (self.peekToken()) {
-            .asterisk => BinaryOp.mul,
-            .slash => BinaryOp.div,
-            .percent => BinaryOp.rem,
+            .plus => BinaryOp.add,
+            .minus => BinaryOp.sub,
             else => break,
         };
         _ = self.advance();
@@ -820,10 +819,11 @@ fn parseProd(
     var lhs: SpannedNode = try self.parseFactor(alloc);
 
     while (true) {
-        self.expectOneOf(&[_]Token{ .plus, .minus });
+        self.expectOneOf(&[_]Token{ .asterisk, .slash, .percent });
         const op = switch (self.peekToken()) {
-            .plus => BinaryOp.add,
-            .minus => BinaryOp.sub,
+            .asterisk => BinaryOp.mul,
+            .slash => BinaryOp.div,
+            .percent => BinaryOp.rem,
             else => break,
         };
         _ = self.advance();
