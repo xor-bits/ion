@@ -92,7 +92,7 @@ pub fn Range(
     comptime T: type,
     default: T,
 ) type {
-    return struct {
+    return extern struct {
         start: T = default,
         end: T = default,
 

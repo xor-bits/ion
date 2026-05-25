@@ -6,6 +6,7 @@ const IrGenerator = @import("IrGenerator.zig");
 const Instr = IrGenerator.Instr;
 const Value = IrGenerator.Value;
 const Span = @import("Tokenizer.zig").Span;
+const VirtualMachine = @This();
 
 pub const Frame = struct {
     block: Instr.Id = .start,
@@ -14,11 +15,13 @@ pub const Frame = struct {
     arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
     node: std.SinglyLinkedList.Node = .{},
     return_register: Instr.Id = .start,
+    symbol: Span = .{},
 };
 
 pub const Register = struct {
     type: Type.Id,
     val: PrimitiveValue,
+    name: Span = .{},
 
     fn ty(type_id: Type.Id) @This() {
         return .{ .type = .type, .val = .{
@@ -54,10 +57,10 @@ pub const Register = struct {
 
     fn func(
         proto: Type.Id,
-        func_start: Instr.Id,
+        entry: Instr.Id,
     ) @This() {
         return .{ .type = proto, .val = .{
-            .func = func_start,
+            .func = .{ .entry = entry },
         } };
     }
 };
@@ -65,6 +68,16 @@ pub const Register = struct {
 const Signedness = enum {
     signed,
     unsigned,
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.writeByte(switch (self) {
+            .signed => 'i',
+            .unsigned => 'u',
+        });
+    }
 };
 
 const IntSize = enum {
@@ -72,11 +85,33 @@ const IntSize = enum {
     @"16",
     @"32",
     @"64",
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.writeAll(switch (self) {
+            .@"8" => "8",
+            .@"16" => "16",
+            .@"32" => "32",
+            .@"64" => "64",
+        });
+    }
 };
 
 const FloatSize = enum {
     @"32",
     @"64",
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.writeAll(switch (self) {
+            .@"32" => "32",
+            .@"64" => "64",
+        });
+    }
 };
 
 pub const TypeInfo = struct {
@@ -160,6 +195,18 @@ pub const Type = union(enum) {
         /// other types
         _,
 
+        const _usize: Type.Id = baseU(usize);
+        const _isize: Type.Id = baseU(isize);
+        const _c_int: Type.Id = baseU(c_int);
+        const _c_char: Type.Id = baseU(c_char);
+        const _c_long: Type.Id = baseU(c_long);
+        const _c_longlong: Type.Id = baseU(c_longlong);
+        const _c_short: Type.Id = baseU(c_short);
+        const _c_uint: Type.Id = baseU(c_uint);
+        const _c_ulong: Type.Id = baseU(c_ulong);
+        const _c_ulonglong: Type.Id = baseU(c_ulonglong);
+        const _c_ushort: Type.Id = baseU(c_ushort);
+
         fn baseI(comptime T: type) Type.Id {
             return switch (@sizeOf(T)) {
                 8 => .i64,
@@ -180,17 +227,63 @@ pub const Type = union(enum) {
             };
         }
 
-        const _usize: Type.Id = baseU(usize);
-        const _isize: Type.Id = baseU(isize);
-        const _c_int: Type.Id = baseU(c_int);
-        const _c_char: Type.Id = baseU(c_char);
-        const _c_long: Type.Id = baseU(c_long);
-        const _c_longlong: Type.Id = baseU(c_longlong);
-        const _c_short: Type.Id = baseU(c_short);
-        const _c_uint: Type.Id = baseU(c_uint);
-        const _c_ulong: Type.Id = baseU(c_ulong);
-        const _c_ulonglong: Type.Id = baseU(c_ulonglong);
-        const _c_ushort: Type.Id = baseU(c_ushort);
+        pub const Printer = struct {
+            self: Type.Id,
+            vm: *const VirtualMachine,
+
+            pub fn format(
+                self: @This(),
+                writer: *std.Io.Writer,
+            ) std.Io.Writer.Error!void {
+                try self.self.write(self.vm, writer);
+            }
+        };
+
+        fn write(
+            self: @This(),
+            vm: *const VirtualMachine,
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
+            const ty = vm.readType(self);
+            switch (ty) {
+                .int => |v| try writer.print("{f}{f}", .{ v.sign, v.bits }),
+                .float => |v| try writer.print("f{f}", .{v.bits}),
+                .array => |v| {
+                    try writer.print("[{}]", .{v.len});
+                    try v.child.write(vm, writer);
+                },
+                .slice => |v| {
+                    try writer.writeAll("[]");
+                    if (v.mut) try writer.writeAll("mut ");
+                    try v.child.write(vm, writer);
+                },
+                .pointer => |v| {
+                    try writer.writeAll("*");
+                    if (v.mut) try writer.writeAll("mut ");
+                    try v.child.write(vm, writer);
+                },
+                .func => |v| {
+                    // FIXME: this is not the actual syntax,
+                    // but func does not store the symexpr
+                    if (v.@"extern") try writer.writeAll("extern ");
+                    try writer.writeAll("fn(");
+                    for (v.params) |t| {
+                        try t.write(vm, writer);
+                        try writer.writeByte(',');
+                    }
+                    try writer.writeAll(") ");
+                    try v.@"return".write(vm, writer);
+                },
+                else => try writer.print("{t}", .{ty}),
+            }
+        }
+
+        pub fn print(
+            self: @This(),
+            vm: *const VirtualMachine,
+        ) Printer {
+            return .{ .self = self, .vm = vm };
+        }
     };
 
     type,
@@ -257,7 +350,7 @@ pub const PrimitiveValue = union(enum) {
     f64: f64,
     pointer: Pointer,
     slice: Slice,
-    func: Instr.Id,
+    func: Function,
 };
 
 pub const Pointer = extern struct {
@@ -272,6 +365,10 @@ pub const Pointer = extern struct {
 pub const Slice = extern struct {
     ptr: Pointer,
     len: usize,
+};
+
+pub const Function = extern struct {
+    entry: Instr.Id,
 };
 
 // pub const Value = union {
@@ -440,8 +537,6 @@ fn runOnce(
     extras: []const u32,
     source: []const u8,
 ) Error!void {
-    _ = source;
-
     const frame = self.topFrame();
 
     const instr_now = frame.instr;
@@ -466,18 +561,42 @@ fn runOnce(
         .call => |v| {
             const func_reg = try get(frame, v.func);
 
-            if (v.argc != 0) std.debug.panic("TODO: function args", .{});
-            const call_frame = try self.pushFrame(
-                alloc,
-                func_reg.val.func,
-            );
-            call_frame.instr = func_reg.val.func;
+            const ip = func_reg.val.func.entry;
+
+            const call_frame = try self.pushFrame(alloc, ip);
             call_frame.return_register = instr_now;
+            call_frame.symbol = func_reg.name;
+            std.debug.print("{s}\n", .{func_reg.name.read(source)});
+
+            const args = IrGenerator.Extra.getParams(
+                extras,
+                v.argv,
+                v.argc,
+            );
+
+            for (args, 0..) |arg, i| {
+                const passed_arg = try get(frame, arg.val);
+                try set(
+                    alloc,
+                    call_frame,
+                    @enumFromInt(@intFromEnum(ip) + i),
+                    passed_arg,
+                );
+            }
         },
         // .unary_op => {},
         .binary_op => |v| {
             const lhs: Register = try get(frame, v.lhs);
             const rhs: Register = try get(frame, v.rhs);
+            errdefer {
+                std.debug.print("lhs = {f}; {any}, rhs = {f}; {any}, op = {f}\n", .{
+                    lhs.type.print(self),
+                    lhs.val,
+                    rhs.type.print(self),
+                    rhs.val,
+                    v.op,
+                });
+            }
             const dst: Register = try switch (v.op) {
                 inline else => |op| @field(ops, @tagName(op))(lhs, rhs),
             };
@@ -490,7 +609,53 @@ fn runOnce(
         },
         // .array => {},
         // .alloca => {},
-        // .as => {},
+        .as => |v| {
+            const ty = try getType(frame, v.ty);
+            var val = try get(frame, v.val);
+
+            if (val.type == .undefined) {
+                val.type = ty;
+            } else {
+                switch (ty) {
+                    inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |into| {
+                        val.val = @unionInit(PrimitiveValue, @tagName(into), b: switch (val.val) {
+                            inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
+                                break :b std.math.lossyCast(PrimitiveOf(into), from);
+                            },
+                            else => return error.OperationUnsupportedForType,
+                        });
+                    },
+                    else => return error.OperationUnsupportedForType,
+                    // .u8 => val.val = .{ .u8 = b: switch (val.val) {
+                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
+                    //         break :b std.math.lossyCast(u8, from);
+                    //     },
+                    //     else => return error.OperationUnsupportedForType,
+                    // } },
+                    // .u16 => val.val = .{ .u16 = b: switch (val.val) {
+                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
+                    //         break :b std.math.lossyCast(u8, from);
+                    //     },
+                    //     else => return error.OperationUnsupportedForType,
+                    // } },
+                    // .u32 => val.val = .{ .u16 = b: switch (val.val) {
+                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
+                    //         break :b std.math.lossyCast(u8, from);
+                    //     },
+                    //     else => return error.OperationUnsupportedForType,
+                    // } },
+                }
+            }
+
+            // std.math.cast(comptime T: type, x: anytype)
+
+            try set(
+                alloc,
+                frame,
+                instr_now,
+                val,
+            );
+        },
         // .decl => {},
         .func => |v| {
             const proto = try getType(frame, v.proto);
@@ -529,6 +694,10 @@ fn runOnce(
                 Register.ty(proto_type),
             );
         },
+        .param => {
+            // const p = try get(frame, instr_now.asValue());
+            // std.debug.print("{any}\n", .{p.val});
+        },
         .@"break" => |v| {
             const break_val = try get(frame, v.val);
             const result = frame.return_register;
@@ -546,7 +715,12 @@ fn runOnce(
             );
         },
         // .dbg_loc => {},
-        // .dbg_name => {},
+        .dbg_name => |v| {
+            var reg = try get(frame, v.val);
+            reg.name = v.name;
+            try set(alloc, frame, instr_now, reg);
+        },
+        // .dbg_print => {},
         // .block => {},
         // .conditional => {},
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
@@ -559,6 +733,7 @@ fn set(
     reg: Instr.Id,
     val: Register,
 ) error{OutOfMemory}!void {
+    // std.debug.print("set %{}\n", .{@intFromEnum(reg)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
@@ -566,6 +741,7 @@ fn get(
     frame: *Frame,
     reg: Value,
 ) error{RegisterNotFound}!Register {
+    // std.debug.print("get {f}\n", .{reg});
     const idx = reg.asIndex() orelse {
         return builtin_registers[@intFromEnum(reg)];
     };

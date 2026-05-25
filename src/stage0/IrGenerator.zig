@@ -97,6 +97,63 @@ pub const BuiltinVariable = enum {
 pub const Extra = enum(u32) {
     _,
 
+    pub fn advance(
+        self: @This(),
+        comptime T: type,
+    ) @This() {
+        return @enumFromInt(@intFromEnum(self) + size(T));
+    }
+
+    pub fn size(
+        comptime T: type,
+    ) comptime_int {
+        return @divExact(@sizeOf(T), @sizeOf(u32));
+    }
+
+    pub fn addProto(
+        extras: *std.ArrayList(u32),
+        alloc: std.mem.Allocator,
+        argc: usize,
+    ) error{OutOfMemory}!struct { Extra, *Proto, []Param } {
+        const extra: Extra = @enumFromInt(extras.items.len);
+        const proto = try extras.addManyAsArray(alloc, size(Proto));
+        _, const params = try addParams(extras, alloc, argc);
+        return .{ extra, @ptrCast(proto), @ptrCast(params) };
+    }
+
+    pub fn getProto(
+        extras: []const u32,
+        extra: Extra,
+    ) struct { Proto, []const Param } {
+        std.debug.assert(size(u32) == size(Param));
+        const proto: Proto = @bitCast(extras[@intFromEnum(extra)..][0..size(Proto)].*);
+        const params = getParams(
+            extras,
+            extra.advance(Proto),
+            proto.param_count,
+        );
+        return .{ proto, params };
+    }
+
+    pub fn addParams(
+        extras: *std.ArrayList(u32),
+        alloc: std.mem.Allocator,
+        argc: usize,
+    ) error{OutOfMemory}!struct { Extra, []Param } {
+        std.debug.assert(size(u32) == size(Param));
+        const extra: Extra = @enumFromInt(extras.items.len);
+        const params = try extras.addManyAsSlice(alloc, argc);
+        return .{ extra, @ptrCast(params) };
+    }
+
+    pub fn getParams(
+        extras: []const u32,
+        extra: Extra,
+        argc: usize,
+    ) []const Param {
+        return @ptrCast(extras[@intFromEnum(extra)..][0..argc]);
+    }
+
     pub const Proto = extern struct {
         return_type: Value,
         /// number of `Param` following this
@@ -172,6 +229,8 @@ pub const Instr = union(enum) {
         /// index into the `extras` array
         extra: Extra,
     },
+    /// saves a function parameter to a register
+    param,
     /// in a struct: completes the struct
     /// in a proto block: declares the function return type and completes the proto
     /// in code: returns from a block with a value
@@ -184,9 +243,10 @@ pub const Instr = union(enum) {
         line: u32,
         col: u32,
     },
-    /// tells which source variable name the next instruction is from
+    /// tells which source variable name the value is from
     dbg_name: struct {
         name: Span,
+        val: Value,
     },
     /// prints a value at compile time
     dbg_print: struct {
@@ -361,7 +421,16 @@ fn dumpBlock(
                 std.debug.print("float_lit({})\n", .{v.value});
             },
             .call => |v| {
-                std.debug.print("call(func={f})\n", .{v.func});
+                const args = Extra.getParams(
+                    self.extras.items,
+                    v.argv,
+                    v.argc,
+                );
+                std.debug.print("call(func={f}, args=[", .{v.func});
+                for (args) |arg| {
+                    std.debug.print("{f}, ", .{arg.val});
+                }
+                std.debug.print("])\n", .{});
             },
             .unary_op => |v| {
                 std.debug.print("unary_op(op={f}, value={f})\n", .{ v.op, v.value });
@@ -397,8 +466,10 @@ fn dumpBlock(
                 cur = v.body_block_end;
             },
             .proto => |v| {
-                const extra: Extra.Proto = @bitCast(self.extras.items[@intFromEnum(v.extra)..][0..2].*);
-                const params: []const Extra.Param = @ptrCast(self.extras.items[@intFromEnum(v.extra) + 2 ..][0..extra.param_count]);
+                const extra, const params = Extra.getProto(
+                    self.extras.items,
+                    v.extra,
+                );
 
                 std.debug.print("proto(return_type={f}, params=[", .{
                     extra.return_type,
@@ -411,6 +482,9 @@ fn dumpBlock(
                 }
                 std.debug.print("])\n", .{});
             },
+            .param => {
+                std.debug.print("param\n", .{});
+            },
             .@"break" => |v| {
                 std.debug.print("break(block=%{}, value={f})\n", .{ @intFromEnum(v.block), v.val });
                 return;
@@ -419,7 +493,10 @@ fn dumpBlock(
                 std.debug.print("dbg_loc(line={}, col={})\n", .{ v.line, v.col });
             },
             .dbg_name => |v| {
-                std.debug.print("dbg_name(name=\"{s}\")\n", .{v.name.read(self.source())});
+                std.debug.print("dbg_name(name=\"{s}\", val={f})\n", .{
+                    v.name.read(self.source()),
+                    v.val,
+                });
             },
             .dbg_print => |v| {
                 std.debug.print("dbg_print(val={f})\n", .{v.val});
@@ -486,16 +563,20 @@ pub fn convertDecl(
             type_hint,
         );
 
-        val = (try self.pushInstr(alloc, .{ .as = .{
+        val = try self.pushInstrGetValue(alloc, .{ .as = .{
             .ty = ty,
             .val = val,
-        } })).asValue();
+        } });
     }
 
+    const named_val = try self.pushInstrGetValue(alloc, .{ .dbg_name = .{
+        .name = decl.ident,
+        .val = val,
+    } });
     try self.symbols.createVar(
         alloc,
         name,
-        val,
+        named_val,
     );
 }
 
@@ -526,7 +607,6 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
-        // .param => {},
         .array => return try self.convertArray(
             alloc,
             name_hint,
@@ -674,9 +754,11 @@ pub fn convertProto(
     try self.pushScope(alloc);
     defer self.popScope();
 
-    const extra: Extra = @enumFromInt(self.extras.items.len);
-    const proto_extra = try self.extras.addManyAsArray(alloc, 2);
-    const params_extra = try self.extras.addManyAsSlice(alloc, proto.params.len());
+    const extra, const proto_extra, const params_extra = try Extra.addProto(
+        &self.extras,
+        alloc,
+        proto.params.len(),
+    );
 
     const name_hint_proto = name_hint.push("proto");
     const name_hint_param = name_hint_proto.push("param");
@@ -694,7 +776,7 @@ pub fn convertProto(
         } });
 
         try self.symbols.createVar(alloc, param_name, param_value);
-        params_extra[i] = @intFromEnum(param_type);
+        params_extra[i] = .{ .val = param_type };
     }
 
     const return_type = if (proto.return_ty_expr) |expr_node_id| b: {
@@ -706,10 +788,10 @@ pub fn convertProto(
         );
     } else Value.void_type;
 
-    proto_extra.* = @bitCast(Extra.Proto{
+    proto_extra.* = .{
         .param_count = proto.params.len(),
         .return_type = return_type,
-    });
+    };
 
     return self.pushInstrGetValue(alloc, .{ .proto = .{
         .extra = extra,
@@ -749,6 +831,24 @@ pub fn convertFn(
             .val = symbol,
         } });
     } else {
+        for (proto_node.params.start..proto_node.params.end) |_| {
+            _ = try self.pushInstrGetValue(alloc, .param);
+        }
+
+        for (proto_node.params.start..proto_node.params.end) |i| {
+            const param = self.nodes()[i].param;
+            const val: Value = @enumFromInt(@intFromEnum(func_block_start.asValue()) + 1);
+            const named_val = try self.pushInstrGetValue(alloc, .{ .dbg_name = .{
+                .name = param.ident,
+                .val = val,
+            } });
+            try self.symbols.createVar(
+                alloc,
+                param.ident.read(self.source()),
+                named_val,
+            );
+        }
+
         const return_value = try self.convertScope(
             alloc,
             &name_hint_fn,
@@ -964,9 +1064,12 @@ pub fn convertCall(
 ) Error!Value {
     const call = self.nodes()[node_id].call;
 
-    const argv: Extra = @enumFromInt(self.extras.items.len);
     const argc: u32 = call.args.len();
-    const args = try self.extras.addManyAsSlice(alloc, argc);
+    const argv, const args = try Extra.addParams(
+        &self.extras,
+        alloc,
+        argc,
+    );
 
     for (call.args.start..call.args.end, args) |expr_node_id, *arg| {
         const arg_expr_result = try self.convertExpr(
@@ -974,7 +1077,7 @@ pub fn convertCall(
             name_hint,
             @intCast(expr_node_id),
         );
-        arg.* = @intFromEnum(arg_expr_result);
+        arg.* = .{ .val = arg_expr_result };
     }
 
     const func = try self.convertExpr(
