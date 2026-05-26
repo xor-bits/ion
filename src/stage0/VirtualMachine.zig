@@ -26,8 +26,12 @@ pub const Frame = struct {
     pub fn clear(
         self: *@This(),
     ) void {
+        self.instr = self.block;
         _ = self.arena.reset(.retain_capacity);
         self.registers.clearRetainingCapacity();
+        self.return_register = .start;
+        self.return_type = null;
+        self.symbol = .{};
     }
 };
 
@@ -649,8 +653,8 @@ fn runOnce(
                 ip,
             );
             call_frame.symbol = func_reg.name;
-            frame.return_register = instr_now;
-            frame.return_type = proto.func.@"return";
+            call_frame.return_register = instr_now;
+            call_frame.return_type = proto.func.@"return";
             // std.debug.print("{s}\n", .{func_reg.name.read(source)});
 
             const args = IrGenerator.Extra.getParams(
@@ -836,19 +840,21 @@ fn runOnce(
             while (self.topFrame().block != v.block) {
                 self.popFrame(config.verbose);
             }
+            const break_frame = self.topFrame();
+            const return_register = break_frame.return_register;
+            const return_type = break_frame.return_type;
             self.popFrame(config.verbose);
 
-            const new_top_frame = self.topFrame();
-            if (new_top_frame.return_type) |return_type| {
-                if (break_val.type != return_type) {
+            if (return_type) |t| {
+                if (break_val.type != t) {
                     return error.TypeMismatch;
                 }
             }
             try set(
                 alloc,
                 config.verbose,
-                new_top_frame,
-                new_top_frame.return_register,
+                self.topFrame(),
+                return_register,
                 break_val,
             );
         },
@@ -858,7 +864,7 @@ fn runOnce(
             }
             const new_top_frame = self.topFrame();
             new_top_frame.clear();
-            new_top_frame.instr = new_top_frame.block;
+            // already set by clear: new_top_frame.instr = new_top_frame.block;
         },
         // .dbg_loc => {},
         .dbg_name => |v| {
@@ -913,13 +919,12 @@ fn runOnce(
             }
         },
         .block => |v| {
-            _ = try self.pushFrame(
+            const block_frame = try self.pushFrame(
                 alloc,
                 config.verbose,
                 frame.instr,
             );
-            frame.return_register = instr_now;
-            frame.return_type = null;
+            block_frame.return_register = instr_now;
             frame.instr = v.block_end;
         },
         .conditional => |v| {
@@ -930,21 +935,19 @@ fn runOnce(
             );
 
             if (try takes_on_true_branch.asBool()) {
-                _ = try self.pushFrame(
+                const block_frame = try self.pushFrame(
                     alloc,
                     config.verbose,
                     frame.instr,
                 );
-                frame.return_register = instr_now;
-                frame.return_type = null;
+                block_frame.return_register = instr_now;
             } else {
-                _ = try self.pushFrame(
+                const block_frame = try self.pushFrame(
                     alloc,
                     config.verbose,
                     v.on_true_block_end,
                 );
-                frame.return_register = instr_now;
-                frame.return_type = null;
+                block_frame.return_register = instr_now;
             }
             frame.instr = v.on_false_block_end;
         },
