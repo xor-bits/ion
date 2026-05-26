@@ -609,6 +609,11 @@ pub fn convertExpr(
     node_id: NodeId,
 ) Error!Value {
     switch (self.nodes()[node_id]) {
+        .comptime_print => return try self.convertComptimePrint(
+            alloc,
+            name_hint,
+            node_id,
+        ),
         .@"if" => return try self.convertIf(
             alloc,
             name_hint,
@@ -713,6 +718,24 @@ pub fn convertAssign(
         .target = target,
         .val = val,
     } });
+}
+
+pub fn convertComptimePrint(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Value {
+    const comptime_print = self.nodes()[node_id].comptime_print;
+    const val = try self.convertExpr(
+        alloc,
+        name_hint,
+        comptime_print.expr,
+    );
+    _ = try self.pushInstr(alloc, .{ .dbg_print = .{
+        .val = val,
+    } });
+    return Value.void;
 }
 
 pub fn convertIf(

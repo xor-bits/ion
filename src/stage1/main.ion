@@ -83,10 +83,12 @@ let main = fn() {
     let mut a = 0 as u64;
     let mut b = 1 as u64;
     loop {
+        comptime_print(a);
         // printf("%u\n\x00".ptr, a);
         let tmp = a + b;
         a = b;
         b = tmp;
+        // comptime_sleep(1);
         // sleep(1);
     };
     // print("done");

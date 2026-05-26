@@ -676,16 +676,12 @@ fn runOnce(
         // .array => {},
         // .alloca => {},
         .write => |v| {
-            const target = v.target.asIndex() orelse {
-                return error.AssignToRValue;
-            };
-            const val = try get(frame, v.val);
-            try reset(
-                alloc,
+            const target = try getPtr(
                 frame,
-                target,
-                val,
+                v.target.asIndex() orelse
+                    return error.AssignToRValue,
             );
+            target.* = try get(frame, v.val);
         },
         // .decl => {},
         .func => |v| {
@@ -759,7 +755,35 @@ fn runOnce(
             reg.name = v.name;
             try set(alloc, frame, instr_now, reg);
         },
-        // .dbg_print => {},
+        .dbg_print => |v| {
+            const val = try get(frame, v.val);
+            switch (val.val) {
+                .type => |t| {
+                    std.debug.print("{f}\n", .{t.print(self)});
+                },
+                .void => {
+                    std.debug.print("void\n", .{});
+                },
+                .undefined => {
+                    std.debug.print("undefined\n", .{});
+                },
+                inline .bool, .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |p| {
+                    std.debug.print("{}\n", .{p});
+                },
+                .pointer => |p| {
+                    std.debug.print("0x{x}\n", .{@as(u64, @bitCast(p))});
+                },
+                .slice => {
+                    // val.type == .slice_u8;
+                    // p.ptr;
+                    // std.debug.print(".{}", .{});
+                    std.debug.panic("todo\n", .{});
+                },
+                .func => |p| {
+                    std.debug.print("{f}\n", .{p.entry});
+                },
+            }
+        },
         .block => {
             const block_frame = try self.pushFrame(alloc, frame.instr);
             block_frame.return_register = instr_now;
@@ -767,16 +791,6 @@ fn runOnce(
         // .conditional => {},
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
     }
-}
-
-fn reset(
-    alloc: std.mem.Allocator,
-    frame: *Frame,
-    reg: Instr.Id,
-    val: Register,
-) error{OutOfMemory}!void {
-    // std.debug.print("reset %{}\n", .{@intFromEnum(reg)});
-    try frame.registers.put(alloc, reg, val);
 }
 
 fn set(
@@ -802,6 +816,21 @@ fn get(
         // FIXME: handle captures properly
         if (frame.node.next) |next| {
             return try get(@fieldParentPtr("node", next), reg);
+        }
+        return error.RegisterNotFound;
+    };
+}
+
+fn getPtr(
+    frame: *Frame,
+    reg: Instr.Id,
+) error{RegisterNotFound}!*Register {
+    // std.debug.print("getPtr {f}\n", .{reg});
+    return frame.registers.getPtr(reg) orelse {
+        @branchHint(.cold);
+        // FIXME: handle captures properly
+        if (frame.node.next) |next| {
+            return try getPtr(@fieldParentPtr("node", next), reg);
         }
         return error.RegisterNotFound;
     };
