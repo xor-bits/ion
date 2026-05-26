@@ -28,14 +28,15 @@ let main = fn() {
     // arr[0] = 4;
     // printi(arr[0]);
 
-    // let v = {
-    //     let x = 5;
-    //     x + x
-    // };
+    let v = {
+        let x = 5;
+        x + x
+    };
+    comptime_print(v);
 
-    // // $
-    // // let error = unknown;
-    // // let n: u32 = "hello"
+    // $
+    // let error = unknown;
+    // let n: u32 = "hello";
 
     // let range = 4..5;
     // let slice: []T = &arr;
@@ -79,6 +80,4 @@ let main = fn() {
             // comptime_print("continue");
         };
     };
-    // print("done");
-    // let c = 4;
 };

@@ -289,6 +289,7 @@ break_context: std.ArrayList(Instr.Id) = .empty,
 continue_context: std.ArrayList(Instr.Id) = .empty,
 instrs: std.MultiArrayList(Instr) = .{},
 extras: std.ArrayList(u32) = .{},
+instr_spans: std.ArrayList(Span) = .{},
 symbols: Symbols = .{},
 main: Value = .undefined,
 // builder: Builder = .{},
@@ -305,6 +306,7 @@ pub fn deinit(
     alloc: std.mem.Allocator,
 ) void {
     // self.builder.deinit(alloc);
+    self.instr_spans.deinit(alloc);
     self.symbols.deinit(alloc);
     self.extras.deinit(alloc);
     self.instrs.deinit(alloc);
@@ -317,6 +319,12 @@ fn nodes(
     self: *@This(),
 ) []const Node {
     return self.parser.nodes.items;
+}
+
+fn spans(
+    self: *@This(),
+) []const Span {
+    return self.parser.node_spans.items;
 }
 
 fn source(
@@ -355,9 +363,12 @@ fn pushInstr(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr,
+    span: Span,
 ) Error!Instr.Id {
-    const id = try self.instrs.addOne(alloc);
-    self.instrs.set(id, instr);
+    const id = self.instrs.len;
+    std.debug.assert(id == self.instr_spans.items.len);
+    try self.instrs.append(alloc, instr);
+    try self.instr_spans.append(alloc, span);
     return @enumFromInt(id);
 }
 
@@ -365,8 +376,13 @@ fn pushInstrGetValue(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr,
+    span: Span,
 ) Error!Value {
-    const instr_addr = try self.pushInstr(alloc, instr);
+    const instr_addr = try self.pushInstr(
+        alloc,
+        instr,
+        span,
+    );
     return instr_addr.asValue();
 }
 
@@ -398,11 +414,15 @@ pub fn run(
     self.main = self.symbols.findVar("main") orelse {
         return error.MainFunctionMissing;
     };
-    _ = try self.pushInstr(alloc, .{ .call = .{
-        .func = self.main,
-        .argc = 0,
-        .argv = @enumFromInt(0),
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .call = .{
+            .func = self.main,
+            .argc = 0,
+            .argv = @enumFromInt(0),
+        } },
+        self.spans()[0],
+    );
 }
 
 pub fn dump(
@@ -599,17 +619,25 @@ pub fn convertDecl(
             type_hint,
         );
 
-        val = try self.pushInstrGetValue(alloc, .{ .binary_op = .{
-            .lhs = val,
-            .op = .as,
-            .rhs = ty,
-        } });
+        val = try self.pushInstrGetValue(
+            alloc,
+            .{ .binary_op = .{
+                .lhs = val,
+                .op = .as,
+                .rhs = ty,
+            } },
+            self.spans()[type_hint],
+        );
     }
 
-    const named_val = try self.pushInstrGetValue(alloc, .{ .dbg_name = .{
-        .name = decl.ident,
-        .val = val,
-    } });
+    const named_val = try self.pushInstrGetValue(
+        alloc,
+        .{ .dbg_name = .{
+            .name = decl.ident,
+            .val = val,
+        } },
+        self.spans()[node_id],
+    );
     try self.symbols.createVar(
         alloc,
         name,
@@ -694,21 +722,21 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
-        .access => |acc| return try self.convertAccess(
+        .access => return try self.convertAccess(
             alloc,
-            acc.ident.read(self.source()),
+            node_id,
         ),
-        .str_lit => |lit| return try self.convertStrLit(
+        .str_lit => return try self.convertStrLit(
             alloc,
-            lit.tok,
+            node_id,
         ),
-        .float_lit => |lit| return try self.convertFloatLit(
+        .float_lit => return try self.convertFloatLit(
             alloc,
-            lit.val,
+            node_id,
         ),
-        .int_lit => |lit| return try self.convertIntLit(
+        .int_lit => return try self.convertIntLit(
             alloc,
-            lit.val,
+            node_id,
         ),
         else => std.debug.panic("TODO: {}", .{self.nodes()[node_id]}),
     }
@@ -734,10 +762,14 @@ pub fn convertAssign(
         assign.rhs,
     );
 
-    _ = try self.pushInstr(alloc, .{ .write = .{
-        .target = target,
-        .val = val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .write = .{
+            .target = target,
+            .val = val,
+        } },
+        self.spans()[node_id],
+    );
     return Value.void;
 }
 
@@ -753,9 +785,11 @@ pub fn convertComptimePrint(
         name_hint,
         comptime_print.expr,
     );
-    _ = try self.pushInstr(alloc, .{ .dbg_print = .{
-        .val = val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .dbg_print = .{ .val = val } },
+        self.spans()[node_id],
+    );
     return Value.void;
 }
 
@@ -774,6 +808,7 @@ pub fn convertIf(
     const if_block = try self.pushInstr(
         alloc,
         .{ .block = undefined },
+        self.spans()[node_id],
     );
     const if_block_entry = self.nextInstr();
 
@@ -786,6 +821,7 @@ pub fn convertIf(
     const conditional = try self.pushInstr(
         alloc,
         .{ .conditional = undefined },
+        self.spans()[node_id],
     );
 
     const on_true_val = try self.convertScope(
@@ -793,10 +829,14 @@ pub fn convertIf(
         &name_hint_on_true,
         @"if".on_true_scope,
     );
-    _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = if_block_entry,
-        .val = on_true_val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"break" = .{
+            .block = if_block_entry,
+            .val = on_true_val,
+        } },
+        self.spans()[node_id],
+    );
     const on_true_block_end = self.nextInstr();
 
     const on_false_val = try self.convertScope(
@@ -804,10 +844,14 @@ pub fn convertIf(
         &name_hint_on_false,
         @"if".on_false_scope,
     );
-    _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = if_block_entry,
-        .val = on_false_val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"break" = .{
+            .block = if_block_entry,
+            .val = on_false_val,
+        } },
+        self.spans()[node_id],
+    );
     const on_false_block_end = self.nextInstr();
 
     std.debug.print("conditional at {f}\n", .{conditional});
@@ -852,11 +896,15 @@ pub fn convertProto(
             &name_hint_param.push(param_name),
             param.type,
         );
-        const param_value = try self.pushInstrGetValue(alloc, .{ .binary_op = .{
-            .lhs = .undefined,
-            .op = .as,
-            .rhs = param_type,
-        } });
+        const param_value = try self.pushInstrGetValue(
+            alloc,
+            .{ .binary_op = .{
+                .lhs = .undefined,
+                .op = .as,
+                .rhs = param_type,
+            } },
+            self.spans()[proto.params.start + i],
+        );
 
         try self.symbols.createVar(alloc, param_name, param_value);
         params_extra[i] = .{ .val = param_type };
@@ -876,9 +924,11 @@ pub fn convertProto(
         .return_type = return_type,
     };
 
-    return self.pushInstrGetValue(alloc, .{ .proto = .{
-        .extra = extra,
-    } });
+    return self.pushInstrGetValue(
+        alloc,
+        .{ .proto = .{ .extra = extra } },
+        self.spans()[node_id],
+    );
 }
 
 pub fn convertFn(
@@ -899,7 +949,11 @@ pub fn convertFn(
         func_node.proto,
     );
 
-    const func_block = try self.pushInstr(alloc, .{ .func = undefined });
+    const func_block = try self.pushInstr(
+        alloc,
+        .{ .func = undefined },
+        self.spans()[node_id],
+    );
     const func_block_start = self.nextInstr();
 
     const name_hint_fn = name_hint.push(if (proto_node.@"extern") "symexpr" else "fn");
@@ -909,24 +963,36 @@ pub fn convertFn(
             &name_hint_fn,
             func_node.scope_or_symexpr,
         );
-        _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = func_block_start,
-            .val = symbol,
-        } });
+        _ = try self.pushInstr(
+            alloc,
+            .{ .@"break" = .{
+                .block = func_block_start,
+                .val = symbol,
+            } },
+            self.spans()[func_node.scope_or_symexpr],
+        );
     } else {
         const argc = proto_node.params.len();
 
-        for (0..argc) |_| {
-            _ = try self.pushInstrGetValue(alloc, .param);
+        for (0..argc) |i| {
+            _ = try self.pushInstrGetValue(
+                alloc,
+                .param,
+                self.spans()[proto_node.params.start + i],
+            );
         }
 
         for (0..argc) |i| {
             const param = self.nodes()[proto_node.params.start + i].param;
             const val: Instr.Id = @enumFromInt(@intFromEnum(func_block_start) + i);
-            const named_val = try self.pushInstrGetValue(alloc, .{ .dbg_name = .{
-                .name = param.ident,
-                .val = val.asValue(),
-            } });
+            const named_val = try self.pushInstrGetValue(
+                alloc,
+                .{ .dbg_name = .{
+                    .name = param.ident,
+                    .val = val.asValue(),
+                } },
+                self.spans()[proto_node.params.start + i],
+            );
             try self.symbols.createVar(
                 alloc,
                 param.ident.read(self.source()),
@@ -945,10 +1011,14 @@ pub fn convertFn(
             &name_hint_fn,
             func_node.scope_or_symexpr,
         );
-        _ = try self.pushInstr(alloc, .{ .@"break" = .{
-            .block = func_block_start,
-            .val = return_value,
-        } });
+        _ = try self.pushInstr(
+            alloc,
+            .{ .@"break" = .{
+                .block = func_block_start,
+                .val = return_value,
+            } },
+            self.spans()[node_id],
+        );
     }
     const body_block_end = self.nextInstr();
 
@@ -967,7 +1037,11 @@ pub fn convertLoop(
 ) Error!Value {
     const loop = self.nodes()[node_id].loop;
 
-    const loop_block = try self.pushInstr(alloc, .{ .block = undefined });
+    const loop_block = try self.pushInstr(
+        alloc,
+        .{ .block = undefined },
+        self.spans()[node_id],
+    );
     const loop_entry = self.nextInstr();
 
     try self.break_context.append(alloc, loop_entry);
@@ -984,9 +1058,11 @@ pub fn convertLoop(
         loop.scope,
     );
 
-    _ = try self.pushInstr(alloc, .{ .@"continue" = .{
-        .block = loop_entry,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"continue" = .{ .block = loop_entry } },
+        self.spans()[node_id],
+    );
 
     const loop_block_end = self.nextInstr();
     self.overwriteInstr(loop_block, .{ .block = .{
@@ -1090,10 +1166,14 @@ pub fn convertReturn(
     const func = self.function_context.getLastOrNull() orelse {
         return error.NotInFunction;
     };
-    _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = func,
-        .val = ret_val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"break" = .{
+            .block = func,
+            .val = ret_val,
+        } },
+        self.spans()[node_id],
+    );
 }
 
 pub fn convertBreak(
@@ -1116,10 +1196,14 @@ pub fn convertBreak(
     const block = self.break_context.getLastOrNull() orelse {
         return error.NotInLoop;
     };
-    _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = block,
-        .val = br_val,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"break" = .{
+            .block = block,
+            .val = br_val,
+        } },
+        self.spans()[node_id],
+    );
 }
 
 pub fn convertContinue(
@@ -1129,15 +1213,18 @@ pub fn convertContinue(
     node_id: NodeId,
 ) Error!void {
     _ = name_hint;
-    _ = node_id;
     // const cont = self.nodes()[node_id].@"continue";
 
     const block = self.continue_context.getLastOrNull() orelse {
         return error.NotInLoop;
     };
-    _ = try self.pushInstr(alloc, .{ .@"continue" = .{
-        .block = block,
-    } });
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"continue" = .{
+            .block = block,
+        } },
+        self.spans()[node_id],
+    );
 }
 
 pub fn convertArray(
@@ -1165,6 +1252,7 @@ pub fn convertArray(
             .len = length,
             .child = element,
         } },
+        self.spans()[node_id],
     );
 }
 
@@ -1182,10 +1270,14 @@ pub fn convertSlice(
         slice.elements_expr,
     );
 
-    const result = try self.pushInstr(alloc, .{ .unary_op = .{
-        .value = elements,
-        .op = if (slice.mut) .slice_mut else .slice,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .unary_op = .{
+            .value = elements,
+            .op = if (slice.mut) .slice_mut else .slice,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
@@ -1203,10 +1295,14 @@ pub fn convertPointer(
         pointer.pointee_expr,
     );
 
-    const result = try self.pushInstr(alloc, .{ .unary_op = .{
-        .value = elements,
-        .op = if (pointer.mut) .pointer_mut else .pointer,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .unary_op = .{
+            .value = elements,
+            .op = if (pointer.mut) .pointer_mut else .pointer,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
@@ -1230,11 +1326,15 @@ pub fn convertBinaryOp(
         binary_op.rhs,
     );
 
-    const result = try self.pushInstr(alloc, .{ .binary_op = .{
-        .lhs = lhs,
-        .rhs = rhs,
-        .op = binary_op.op,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .binary_op = .{
+            .lhs = lhs,
+            .rhs = rhs,
+            .op = binary_op.op,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
@@ -1252,15 +1352,21 @@ pub fn convertFieldAcc(
         field_acc.val,
     );
 
-    const field = try self.pushInstrGetValue(alloc, .{
-        .str_lit = .{ .value = field_acc.ident },
-    });
+    const field = try self.pushInstrGetValue(
+        alloc,
+        .{ .str_lit = .{ .value = field_acc.ident } },
+        self.spans()[node_id],
+    );
 
-    const result = try self.pushInstr(alloc, .{ .binary_op = .{
-        .lhs = container,
-        .rhs = field,
-        .op = BinaryOp.field,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .binary_op = .{
+            .lhs = container,
+            .rhs = field,
+            .op = BinaryOp.field,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
@@ -1283,11 +1389,15 @@ pub fn convertIndexAcc(
         index_acc.expr,
     );
 
-    const result = try self.pushInstr(alloc, .{ .binary_op = .{
-        .lhs = container,
-        .rhs = index,
-        .op = BinaryOp.index,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .binary_op = .{
+            .lhs = container,
+            .rhs = index,
+            .op = BinaryOp.index,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
@@ -1321,19 +1431,24 @@ pub fn convertCall(
         call.val,
     );
 
-    const result = try self.pushInstr(alloc, .{ .call = .{
-        .func = func,
-        .argv = argv,
-        .argc = argc,
-    } });
+    const result = try self.pushInstr(
+        alloc,
+        .{ .call = .{
+            .func = func,
+            .argv = argv,
+            .argc = argc,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
 pub fn convertAccess(
     self: *@This(),
     alloc: std.mem.Allocator,
-    var_name: []const u8,
+    node_id: NodeId,
 ) Error!Value {
+    const var_name = self.nodes()[node_id].access.ident.read(self.source());
     _ = alloc;
     // if (std.mem.eql(u8, "_", var_name)) {
     //     const result = self.registers.pushTmp();
@@ -1385,11 +1500,12 @@ pub fn convertAccess(
 pub fn convertStrLit(
     self: *@This(),
     alloc: std.mem.Allocator,
-    span: Span,
+    node_id: NodeId,
 ) Error!Value {
+    const span = self.nodes()[node_id].str_lit.tok;
     const contents = span.read(self.source());
 
-    std.debug.assert(span.len() >= 2);
+    std.debug.assert(contents.len >= 2);
     std.debug.assert(contents[0] == '"');
     std.debug.assert(contents[contents.len - 1] == '"');
 
@@ -1397,31 +1513,41 @@ pub fn convertStrLit(
     span_without_quotes.start += 1;
     span_without_quotes.end -= 1;
 
-    return try self.pushInstrGetValue(alloc, .{ .str_lit = .{
-        .value = span_without_quotes,
-    } });
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .str_lit = .{ .value = span_without_quotes } },
+        self.spans()[node_id],
+    );
 }
 
 pub fn convertFloatLit(
     self: *@This(),
     alloc: std.mem.Allocator,
-    value: f64,
+    node_id: NodeId,
 ) Error!Value {
-    const result = try self.pushInstr(alloc, .{ .float_lit = .{
-        .value = value,
-    } });
+    const value = self.nodes()[node_id].float_lit.val;
+    const result = try self.pushInstr(
+        alloc,
+        .{ .float_lit = .{
+            .value = value,
+        } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
 pub fn convertIntLit(
     self: *@This(),
     alloc: std.mem.Allocator,
-    value: u128,
+    node_id: NodeId,
 ) Error!Value {
     // TODO: support big ints
-    const result = try self.pushInstr(alloc, .{ .int_lit = .{
-        .value = @intCast(value),
-    } });
+    const value = self.nodes()[node_id].int_lit.val;
+    const result = try self.pushInstr(
+        alloc,
+        .{ .int_lit = .{ .value = @intCast(value) } },
+        self.spans()[node_id],
+    );
     return result.asValue();
 }
 
