@@ -1,46 +1,15 @@
-// let global = 10;
+let global = 10;
 
-// let sign = fn(v: u32): u32;
+let sign = fn(v: u32): u32;
 
-// let nothing = fn(v: u32): u32 { v };
+let nothing = fn(v: u32): u32 { v };
 
-// let f = fn(
-//     a: u32,
-//     b: u32,
-// ): u32 {
-//     a + b
-// };
-
-// let print = fn(s: []u8) {
-//     let printf = extern fn(s: *u8, ..): c_int @ "printf";
-//     let res = printf("%.*s\n\x00".ptr, s.len, s.ptr);
-// };
-
-// let printi = fn(i: u32) {
-//     let printf = extern fn(s: *u8, ..): c_int @ "printf";
-//     printf("num: %lu\n\x00".ptr, i);
-// };
- 
-// let rand = fn(): c_int {
-//     let rand = extern fn(): c_int @ "rand";
-//     rand()
-// };
-
-// let srand = fn() {
-//     let srand = extern fn(seed: c_uint) @ "srand";
-//     let time = extern fn(t: usize): u64 @ "time";
-//     srand(time(0) as c_uint);
-// };
-
-// let sleep = fn(sec: u32) {
-//     let sleep = extern fn(sec: c_uint): c_uint @ "sleep";
-//     sleep(sec);
-// };
-
-// let malloc = fn(bytes: usize): *mut u8 {
-//     let malloc = extern fn(size: usize): *mut u8 @ "malloc";
-//     malloc(bytes)
-// };
+let f = fn(
+    a: u32,
+    b: u32,
+): u32 {
+    a + b
+};
 
 let func = fn(b: bool): u32 {
     if b {
@@ -51,6 +20,10 @@ let func = fn(b: bool): u32 {
 };
 
 let main = fn() {
+    comptime_print(func(true));
+    return;
+
+    
     // let T = u32;
     // let mut arr: [4]T = undefined;
     // arr[0] = 4;

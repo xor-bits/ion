@@ -409,7 +409,12 @@ pub fn dump(
     self: *@This(),
 ) void {
     std.debug.print("IR GENERATOR DUMP:\n", .{});
-    self.dumpBlock(@enumFromInt(0), 0);
+
+    // for (0..self.instrs.len) |i| {
+    //     std.debug.print("%{} = {t}\n", .{ i, self.instrs.get(i) });
+    // }
+
+    self.dumpBlock(.start, @enumFromInt(self.instrs.len), 0);
     std.debug.print(";; instr extra = {}\n", .{self.extras.items.len});
     std.debug.print(";; instr count = {}\n", .{self.instrs.len});
     std.debug.print(";; main = {f}\n", .{self.main});
@@ -418,11 +423,14 @@ pub fn dump(
 fn dumpBlock(
     self: *@This(),
     start: Instr.Id,
+    end: Instr.Id,
     indent: usize,
 ) void {
     var cur = start;
 
-    while (@intFromEnum(cur) < self.instrs.len) {
+    // std.debug.print("{f}..{f}\n", .{ start, end });
+
+    while (@intFromEnum(cur) < @intFromEnum(end)) {
         const instr = self.instrs.get(@intFromEnum(cur));
         for (0..indent) |_| std.debug.print("    ", .{});
         std.debug.print("{f} = ", .{cur});
@@ -479,14 +487,14 @@ fn dumpBlock(
                 std.debug.print("decl(name=\"{s}\", block={{\n", .{
                     v.name.read(self.source()),
                 });
-                self.dumpBlock(cur, indent + 1);
+                self.dumpBlock(cur, v.block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
                 cur = v.block_end;
             },
             .func => |v| {
                 std.debug.print("func(proto={f}, body={{\n", .{v.proto});
-                self.dumpBlock(cur, indent + 1);
+                self.dumpBlock(cur, v.body_block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
                 cur = v.body_block_end;
@@ -513,11 +521,9 @@ fn dumpBlock(
             },
             .@"break" => |v| {
                 std.debug.print("break(block={f}, value={f})\n", .{ v.block, v.val });
-                return;
             },
             .@"continue" => |v| {
                 std.debug.print("continue(block={f})\n", .{v.block});
-                return;
             },
             .dbg_loc => |v| {
                 std.debug.print("dbg_loc(line={}, col={})\n", .{ v.line, v.col });
@@ -533,17 +539,17 @@ fn dumpBlock(
             },
             .block => |v| {
                 std.debug.print("block(body={{\n", .{});
-                self.dumpBlock(cur, indent + 1);
+                self.dumpBlock(cur, v.block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
                 cur = v.block_end;
             },
             .conditional => |v| {
                 std.debug.print("conditional(check={f}, on_true_block={{\n", .{v.boolean});
-                self.dumpBlock(cur, indent + 1);
+                self.dumpBlock(cur, v.on_true_block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}}, on_false_block={{\n", .{});
-                self.dumpBlock(v.on_true_block_end, indent + 1);
+                self.dumpBlock(v.on_true_block_end, v.on_false_block_end, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
                 cur = v.on_false_block_end;
@@ -765,7 +771,11 @@ pub fn convertIf(
     const name_hint_on_true = name_hint.push("on_true");
     const name_hint_on_false = name_hint.push("on_false");
 
-    const if_block = try self.pushInstr(alloc, .{ .block = undefined });
+    const if_block = try self.pushInstr(
+        alloc,
+        .{ .block = .{ .block_end = self.nextInstr() } },
+    );
+    const if_block_entry = self.nextInstr();
 
     const boolean = try self.convertExpr(
         alloc,
@@ -773,34 +783,43 @@ pub fn convertIf(
         @"if".check_expr,
     );
 
-    const conditional = try self.pushInstr(alloc, .{ .conditional = undefined });
+    const conditional = try self.pushInstr(
+        alloc,
+        .{ .conditional = .{
+            .boolean = boolean,
+            .on_false_block_end = self.nextInstr(),
+            .on_true_block_end = self.nextInstr(),
+        } },
+    );
 
-    const on_true_entry = self.nextInstr();
     const on_true_val = try self.convertScope(
         alloc,
         &name_hint_on_true,
         @"if".on_true_scope,
     );
     _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = on_true_entry,
+        .block = if_block_entry,
         .val = on_true_val,
     } });
+    const on_true_block_end = self.nextInstr();
 
-    const on_false_entry = self.nextInstr();
     const on_false_val = try self.convertScope(
         alloc,
         &name_hint_on_false,
         @"if".on_false_scope,
     );
     _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = on_false_entry,
+        .block = if_block_entry,
         .val = on_false_val,
     } });
     const on_false_block_end = self.nextInstr();
 
+    std.debug.print("conditional at {f}\n", .{conditional});
+    std.debug.print("conditional block at {f}\n", .{if_block});
+
     self.instrs.set(@intFromEnum(conditional), .{ .conditional = .{
         .boolean = boolean,
-        .on_true_block_end = on_false_entry,
+        .on_true_block_end = on_true_block_end,
         .on_false_block_end = on_false_block_end,
     } });
     self.instrs.set(@intFromEnum(if_block), .{ .block = .{
@@ -899,16 +918,18 @@ pub fn convertFn(
             .val = symbol,
         } });
     } else {
-        for (proto_node.params.start..proto_node.params.end) |_| {
+        const argc = proto_node.params.len();
+
+        for (0..argc) |_| {
             _ = try self.pushInstrGetValue(alloc, .param);
         }
 
-        for (proto_node.params.start..proto_node.params.end) |i| {
-            const param = self.nodes()[i].param;
-            const val: Value = @enumFromInt(@intFromEnum(func_block_start.asValue()) + 1);
+        for (0..argc) |i| {
+            const param = self.nodes()[proto_node.params.start + i].param;
+            const val: Instr.Id = @enumFromInt(@intFromEnum(func_block_start) + i);
             const named_val = try self.pushInstrGetValue(alloc, .{ .dbg_name = .{
                 .name = param.ident,
-                .val = val,
+                .val = val.asValue(),
             } });
             try self.symbols.createVar(
                 alloc,
