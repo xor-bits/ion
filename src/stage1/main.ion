@@ -21,7 +21,6 @@ let func = fn(b: bool): u32 {
 
 let main = fn() {
     comptime_print(func(false));
-    return;
     
     // let T = u32;
     // let mut arr: [4]T = undefined;

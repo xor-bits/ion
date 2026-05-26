@@ -518,7 +518,11 @@ pub fn run(
     alloc: std.mem.Allocator,
     config: Config,
 ) Error!void {
-    const bottom_frame = try self.pushFrame(alloc, .start);
+    const bottom_frame = try self.pushFrame(
+        alloc,
+        config.verbose,
+        .start,
+    );
     _ = bottom_frame;
     // bottom_frame.instr = self.ir_gen.main.asIndex() orelse {
     //     @branchHint(.cold);
@@ -641,7 +645,11 @@ fn runOnce(
 
             const ip = func_reg.val.func.entry;
 
-            const call_frame = try self.pushFrame(alloc, ip);
+            const call_frame = try self.pushFrame(
+                alloc,
+                config.verbose,
+                ip,
+            );
             call_frame.symbol = func_reg.name;
             frame.return_register = instr_now;
             // std.debug.print("{s}\n", .{func_reg.name.read(source)});
@@ -824,9 +832,9 @@ fn runOnce(
             );
 
             while (self.topFrame().block != v.block) {
-                self.popFrame();
+                self.popFrame(config.verbose);
             }
-            self.popFrame();
+            self.popFrame(config.verbose);
 
             const new_top_frame = self.topFrame();
             try set(
@@ -839,7 +847,7 @@ fn runOnce(
         },
         .@"continue" => |v| {
             while (self.topFrame().block != v.block) {
-                self.popFrame();
+                self.popFrame(config.verbose);
             }
             const new_top_frame = self.topFrame();
             new_top_frame.clear();
@@ -898,8 +906,12 @@ fn runOnce(
             }
         },
         .block => |v| {
-            const block_frame = try self.pushFrame(alloc, frame.instr);
-            block_frame.return_register = instr_now;
+            _ = try self.pushFrame(
+                alloc,
+                config.verbose,
+                frame.instr,
+            );
+            frame.return_register = instr_now;
             frame.instr = v.block_end;
         },
         .conditional => |v| {
@@ -910,10 +922,18 @@ fn runOnce(
             );
 
             if (try takes_on_true_branch.asBool()) {
-                const block_frame = try self.pushFrame(alloc, frame.instr);
+                const block_frame = try self.pushFrame(
+                    alloc,
+                    config.verbose,
+                    frame.instr,
+                );
                 block_frame.return_register = instr_now;
             } else {
-                const block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                const block_frame = try self.pushFrame(
+                    alloc,
+                    config.verbose,
+                    v.on_true_block_end,
+                );
                 block_frame.return_register = instr_now;
             }
             frame.instr = v.on_false_block_end;
@@ -1088,8 +1108,10 @@ fn topFrameConst(
 fn pushFrame(
     self: *@This(),
     alloc: std.mem.Allocator,
+    verbose: bool,
     ip: Instr.Id,
 ) error{OutOfMemory}!*Frame {
+    if (verbose) std.debug.print("push frame {f}\n", .{ip});
     const frame = if (self.reusable_frames.popFirst()) |reused|
         frameFromNode(reused)
     else b: {
@@ -1105,8 +1127,12 @@ fn pushFrame(
     return frame;
 }
 
-fn popFrame(self: *@This()) void {
+fn popFrame(
+    self: *@This(),
+    verbose: bool,
+) void {
     const frame = frameFromNode(self.frames.popFirst().?);
+    if (verbose) std.debug.print("pop frame {f}\n", .{frame.block});
     frame.clear();
     self.reusable_frames.prepend(&frame.node);
 }
