@@ -70,7 +70,13 @@ pub fn main() !u8 {
 
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
     defer vm.deinit(alloc);
-    try vm.run(alloc, .{});
+    vm.run(alloc, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            vm.printErrors();
+            return 4;
+        },
+    };
 
     // vm.dump();
 

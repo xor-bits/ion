@@ -142,7 +142,7 @@ fn negFloatFunc(val: anytype) @TypeOf(val) {
 }
 
 pub fn not(val: Register) Error!Register {
-    if (val.val != .bool) return Error.OperationUnsupportedForType;
+    if (val.val != .bool) return Error.Runtime;
     return .{ .type = .bool, .val = .{
         .bool = !val.val.bool,
     } };
@@ -159,7 +159,7 @@ pub fn not(val: Register) Error!Register {
 // deref,
 
 pub fn slice(val: Register) Error!Register {
-    if (val.val != .bool) return Error.OperationUnsupportedForType;
+    if (val.val != .bool) return Error.Runtime;
     return .{ .type = .bool, .val = .{
         .bool = !val.val.bool,
     } };
@@ -171,7 +171,7 @@ fn mathOp(
     lhs: Register,
     rhs: Register,
 ) Error!Register {
-    if (lhs.type != rhs.type) return Error.TypeMismatch;
+    if (lhs.type != rhs.type) return Error.Runtime;
     std.debug.assert(std.meta.activeTag(lhs.val) == rhs.val);
     return switch (std.meta.activeTag(lhs.val)) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64 => |v| {
@@ -196,7 +196,7 @@ fn mathOp(
                 ),
             ) };
         },
-        else => Error.OperationUnsupportedForType,
+        else => Error.Runtime,
     };
 }
 
@@ -205,7 +205,7 @@ fn boolOp(
     lhs: Register,
     rhs: Register,
 ) Error!Register {
-    if (lhs.type != rhs.type) return Error.TypeMismatch;
+    if (lhs.type != rhs.type) return Error.Runtime;
     std.debug.assert(std.meta.activeTag(lhs.val) == rhs.val);
     return switch (std.meta.activeTag(lhs.val)) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |v| {
@@ -215,7 +215,7 @@ fn boolOp(
                 @field(rhs.val, t),
             ) } };
         },
-        else => Error.OperationUnsupportedForType,
+        else => Error.Runtime,
     };
 }
 
@@ -241,6 +241,6 @@ fn unaryOp(
                 funcFloat(@field(val.val, t)),
             ) };
         },
-        else => Error.OperationUnsupportedForType,
+        else => Error.Runtime,
     };
 }

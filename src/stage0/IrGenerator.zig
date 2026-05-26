@@ -154,6 +154,25 @@ pub const Extra = enum(u32) {
         return @ptrCast(extras[@intFromEnum(extra)..][0..argc]);
     }
 
+    pub fn addNodeIds(
+        extras: *std.ArrayList(u32),
+        alloc: std.mem.Allocator,
+        argc: usize,
+    ) error{OutOfMemory}!struct { Extra, []NodeId } {
+        std.debug.assert(size(u32) == size(NodeId));
+        const extra: Extra = @enumFromInt(extras.items.len);
+        const params = try extras.addManyAsSlice(alloc, argc);
+        return .{ extra, @ptrCast(params) };
+    }
+
+    pub fn getNodeIds(
+        extras: []const u32,
+        argv: Extra,
+        argc: usize,
+    ) []const NodeId {
+        return @ptrCast(extras[@intFromEnum(argv) + argc ..][0..argc]);
+    }
+
     pub const Proto = extern struct {
         return_type: Value,
         /// number of `Param` following this
@@ -349,14 +368,14 @@ pub fn pushError(
     span: Span,
     comptime fmt: []const u8,
     args: anytype,
-) error{ OutOfMemory, InvalidSemantic } {
+) Error {
     @branchHint(.cold);
     const message = try std.fmt.allocPrint(alloc, fmt, args);
     try self.errors.append(alloc, .{
         .message = message,
         .span = span,
     });
-    return error.InvalidSemantic;
+    return Error.InvalidSemantic;
 }
 
 fn nodes(
@@ -1476,14 +1495,22 @@ pub fn convertCall(
         alloc,
         argc,
     );
+    const arg_node_ids_extra, const arg_node_ids = try Extra.addNodeIds(
+        &self.extras,
+        alloc,
+        argc,
+    );
+    std.debug.assert(@intFromEnum(arg_node_ids_extra) == @intFromEnum(argv) + argc);
 
-    for (call.args.start..call.args.end, args) |expr_node_id, *arg| {
+    for (call.args.start..call.args.end, args, arg_node_ids) |expr_node_id, *arg, *arg_node_id| {
+        const i: NodeId = @intCast(expr_node_id);
         const arg_expr_result = try self.convertExpr(
             alloc,
             name_hint,
-            @intCast(expr_node_id),
+            i,
         );
         arg.* = .{ .val = arg_expr_result };
+        arg_node_id.* = i;
     }
 
     const func = try self.convertExpr(
@@ -1499,7 +1526,7 @@ pub fn convertCall(
             .argv = argv,
             .argc = argc,
         } },
-        self.spans()[node_id],
+        self.spans()[call.val],
     );
     return result.asValue();
 }

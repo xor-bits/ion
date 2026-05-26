@@ -34,9 +34,14 @@ let main = fn() {
     };
     comptime_print(v);
 
+    // uncomment the next line for a syntax error:
     // $
     // let error = unknown;
+    // uncomment one of the next 3 lines for a type error:
     // let n: u32 = "hello";
+    // func("hello");
+    // let n: []u8 = func(true);
+    // func(1, 2);
 
     // let range = 4..5;
     // let slice: []T = &arr;

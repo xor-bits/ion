@@ -40,20 +40,6 @@ pub const Register = struct {
     val: PrimitiveValue,
     name: Span = .{},
 
-    fn asTy(
-        self: @This(),
-    ) error{TypeMismatch}!Type.Id {
-        if (self.type != .type) return error.TypeMismatch;
-        return self.val.type;
-    }
-
-    fn asBool(
-        self: @This(),
-    ) error{TypeMismatch}!bool {
-        if (self.type != .bool) return error.TypeMismatch;
-        return self.val.bool;
-    }
-
     fn ty(
         type_id: Type.Id,
     ) @This() {
@@ -444,15 +430,24 @@ pub const Function = extern struct {
 //     // func: NodeId,
 // };
 
+pub const ErrorMsg = struct {
+    span: Span,
+    message: []const u8,
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.print("{s}", .{self.message});
+    }
+};
+
+pub const Diagnostic = @import("main.zig").Diagnostic(ErrorMsg);
+
 pub const Error = error{
     OutOfMemory,
-    NotCallable,
-    IpOutOfBounds,
-    RegisterNotFound,
-    TypeMismatch,
-    OperationUnsupportedForType,
-    TypeTooLarge,
-    AssignToRValue,
+    OutOfGas,
+    Runtime,
 };
 
 // strings: std.AutoHashMapUnmanaged(Instr.Index, []const u8) = .{},
@@ -462,6 +457,7 @@ types: std.MultiArrayList(Type) = .empty,
 type_infos: std.MultiArrayList(TypeInfo) = .empty,
 type_map: std.HashMapUnmanaged(Type, Type.Id, Type.Context, 80) = .empty,
 arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
+errors: std.ArrayList(ErrorMsg) = .empty,
 ir_gen: *const IrGenerator,
 
 pub const builtin_registers: [IrGenerator.Value.builtin_count]Register = [_]Register{
@@ -516,6 +512,40 @@ pub fn deinit(
     self.type_infos.deinit(alloc);
     self.type_map.deinit(alloc);
     self.arena.deinit();
+    for (self.errors.items) |err| {
+        alloc.free(err.message);
+    }
+    self.errors.deinit(alloc);
+}
+
+pub fn printErrors(
+    self: *const @This(),
+) void {
+    const source = self.ir_gen.parser.tokenizer.source;
+    for (self.errors.items) |err| {
+        const diag = Diagnostic{
+            .kind = .err,
+            .msg = err,
+            .src = .fromSpan(err.span, source),
+        };
+        std.debug.print("{f}\n", .{diag});
+    }
+}
+
+pub fn pushError(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    s: Span,
+    comptime fmt: []const u8,
+    args: anytype,
+) Error {
+    @branchHint(.cold);
+    const message = try std.fmt.allocPrint(alloc, fmt, args);
+    try self.errors.append(alloc, .{
+        .message = message,
+        .span = s,
+    });
+    return Error.Runtime;
 }
 
 pub fn run(
@@ -533,21 +563,21 @@ pub fn run(
     const extras = self.ir_gen.extras.items;
     const source = self.ir_gen.parser.tokenizer.source;
 
-    try self.addCommonType(alloc, .type, .type);
-    try self.addCommonType(alloc, .void, .void);
-    try self.addCommonType(alloc, .bool, .bool);
-    try self.addCommonType(alloc, .undefined, .undefined);
-    try self.addCommonType(alloc, intType(.unsigned, .@"8"), .u8);
-    try self.addCommonType(alloc, intType(.unsigned, .@"16"), .u16);
-    try self.addCommonType(alloc, intType(.unsigned, .@"32"), .u32);
-    try self.addCommonType(alloc, intType(.unsigned, .@"64"), .u64);
-    try self.addCommonType(alloc, intType(.signed, .@"8"), .i8);
-    try self.addCommonType(alloc, intType(.signed, .@"16"), .i16);
-    try self.addCommonType(alloc, intType(.signed, .@"32"), .i32);
-    try self.addCommonType(alloc, intType(.signed, .@"64"), .i64);
-    try self.addCommonType(alloc, floatType(.@"32"), .f32);
-    try self.addCommonType(alloc, floatType(.@"64"), .f64);
-    try self.addCommonType(alloc, .{ .slice = .{
+    try self.addCommonType(alloc, .start, .type, .type);
+    try self.addCommonType(alloc, .start, .void, .void);
+    try self.addCommonType(alloc, .start, .bool, .bool);
+    try self.addCommonType(alloc, .start, .undefined, .undefined);
+    try self.addCommonType(alloc, .start, intType(.unsigned, .@"8"), .u8);
+    try self.addCommonType(alloc, .start, intType(.unsigned, .@"16"), .u16);
+    try self.addCommonType(alloc, .start, intType(.unsigned, .@"32"), .u32);
+    try self.addCommonType(alloc, .start, intType(.unsigned, .@"64"), .u64);
+    try self.addCommonType(alloc, .start, intType(.signed, .@"8"), .i8);
+    try self.addCommonType(alloc, .start, intType(.signed, .@"16"), .i16);
+    try self.addCommonType(alloc, .start, intType(.signed, .@"32"), .i32);
+    try self.addCommonType(alloc, .start, intType(.signed, .@"64"), .i64);
+    try self.addCommonType(alloc, .start, floatType(.@"32"), .f32);
+    try self.addCommonType(alloc, .start, floatType(.@"64"), .f64);
+    try self.addCommonType(alloc, .start, .{ .slice = .{
         .mut = false,
         .child = .u8,
     } }, .slice_u8);
@@ -564,7 +594,7 @@ pub fn run(
             config,
             gas_ptr,
         ) catch |err| switch (err) {
-            error.IpOutOfBounds => break,
+            error.OutOfGas => break,
             else => return err,
         };
     }
@@ -594,7 +624,7 @@ fn runOnce(
     gas: ?*usize,
 ) Error!void {
     if (gas) |gas_left| {
-        if (gas_left.* == 0) return error.IpOutOfBounds;
+        if (gas_left.* == 0) return error.OutOfGas;
         gas_left.* -= 1;
     }
 
@@ -603,7 +633,7 @@ fn runOnce(
     const instr_now = frame.instr;
     const opcode = fetchInstr(instrs, instr_now) orelse {
         @branchHint(.cold);
-        return error.IpOutOfBounds;
+        return error.OutOfGas;
     };
     frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
 
@@ -637,13 +667,31 @@ fn runOnce(
         },
         // .float_lit => {},
         .call => |v| {
-            const func_reg = try get(
+            const func_reg = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.func,
             );
             const proto = self.readType(func_reg.type);
-            if (proto != .func) return error.NotCallable;
+            if (proto != .func) {
+                return self.pushError(
+                    alloc,
+                    self.span(instr_now),
+                    "'{f}' is not callable",
+                    .{func_reg.type.print(self)},
+                );
+            }
+
+            if (v.argc != proto.func.params.len) {
+                return self.pushError(
+                    alloc,
+                    self.span(instr_now),
+                    "incorrect argument count: expected {}, found {}",
+                    .{ proto.func.params.len, v.argc },
+                );
+            }
 
             const ip = func_reg.val.func.entry;
 
@@ -662,15 +710,30 @@ fn runOnce(
                 v.argv,
                 v.argc,
             );
+            const node_ids = IrGenerator.Extra.getNodeIds(
+                extras,
+                v.argv,
+                v.argc,
+            );
 
             for (args, 0..) |arg, i| {
-                const passed_arg = try get(
+                const passed_arg = try self.get(
+                    alloc,
+                    instr_now,
                     config.verbose,
                     frame,
                     arg.val,
                 );
                 if (passed_arg.type != proto.func.params[i]) {
-                    return error.TypeMismatch;
+                    return self.pushError(
+                        alloc,
+                        self.ir_gen.parser.node_spans.items[node_ids[i]],
+                        "unexpected function argument type: expected '{f}', got: '{f}'",
+                        .{
+                            proto.func.params[i].print(self),
+                            passed_arg.type.print(self),
+                        },
+                    );
                 }
                 try set(
                     alloc,
@@ -682,7 +745,9 @@ fn runOnce(
             }
         },
         .unary_op => |v| {
-            const val: Register = try get(
+            const val: Register = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.value,
@@ -695,21 +760,21 @@ fn runOnce(
                 });
             }
             const dst: Register = try switch (v.op) {
-                .slice => Register.ty(try self.resolveType(alloc, .{ .slice = .{
+                .slice => Register.ty(try self.resolveType(alloc, instr_now, .{ .slice = .{
                     .mut = false,
-                    .child = try val.asTy(),
+                    .child = try self.regAsType(alloc, instr_now, val),
                 } })),
-                .slice_mut => Register.ty(try self.resolveType(alloc, .{ .slice = .{
+                .slice_mut => Register.ty(try self.resolveType(alloc, instr_now, .{ .slice = .{
                     .mut = true,
-                    .child = try val.asTy(),
+                    .child = try self.regAsType(alloc, instr_now, val),
                 } })),
-                .pointer => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
+                .pointer => Register.ty(try self.resolveType(alloc, instr_now, .{ .pointer = .{
                     .mut = false,
-                    .child = try val.asTy(),
+                    .child = try self.regAsType(alloc, instr_now, val),
                 } })),
-                .pointer_mut => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
+                .pointer_mut => Register.ty(try self.resolveType(alloc, instr_now, .{ .pointer = .{
                     .mut = true,
-                    .child = try val.asTy(),
+                    .child = try self.regAsType(alloc, instr_now, val),
                 } })),
                 .address, .address_mut => {
                     @panic("todo");
@@ -728,12 +793,16 @@ fn runOnce(
             );
         },
         .binary_op => |v| {
-            const lhs: Register = try get(
+            const lhs: Register = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.lhs,
             );
-            const rhs: Register = try get(
+            const rhs: Register = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.rhs,
@@ -748,7 +817,12 @@ fn runOnce(
                 });
             }
             const dst: Register = try switch (v.op) {
-                .as => try cast(lhs, try rhs.asTy()),
+                .as => try self.cast(
+                    alloc,
+                    instr_now,
+                    lhs,
+                    try self.regAsType(alloc, instr_now, rhs),
+                ),
                 inline else => |op| @field(ops, @tagName(op))(lhs, rhs),
             };
             try set(
@@ -762,13 +836,23 @@ fn runOnce(
         // .array => {},
         // .alloca => {},
         .write => |v| {
-            const target = try getPtr(
+            const target = try self.getPtr(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
-                v.target.asIndex() orelse
-                    return error.AssignToRValue,
+                v.target.asIndex() orelse {
+                    return self.pushError(
+                        alloc,
+                        self.span(instr_now),
+                        "attempt to write to an rvalue",
+                        .{},
+                    );
+                },
             );
-            target.* = try get(
+            target.* = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.val,
@@ -776,7 +860,9 @@ fn runOnce(
         },
         // .decl => {},
         .func => |v| {
-            const proto = try getType(
+            const proto = try self.getType(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.proto,
@@ -801,23 +887,31 @@ fn runOnce(
 
             for (params, param_types) |_param, *param_type| {
                 const param: IrGenerator.Extra.Param = @bitCast(_param);
-                param_type.* = try getType(
+                param_type.* = try self.getType(
+                    alloc,
+                    instr_now,
                     config.verbose,
                     frame,
                     param.val,
                 );
             }
-            const return_type = try getType(
+            const return_type = try self.getType(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 proto.return_type,
             );
 
-            const proto_type = try self.resolveType(alloc, .{ .func = .{
-                .@"extern" = false,
-                .params = param_types,
-                .@"return" = return_type,
-            } });
+            const proto_type = try self.resolveType(
+                alloc,
+                instr_now,
+                .{ .func = .{
+                    .@"extern" = false,
+                    .params = param_types,
+                    .@"return" = return_type,
+                } },
+            );
             try set(
                 alloc,
                 config.verbose,
@@ -831,7 +925,9 @@ fn runOnce(
             // std.debug.print("{any}\n", .{p.val});
         },
         .@"break" => |v| {
-            const break_val = try get(
+            const break_val = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.val,
@@ -847,7 +943,12 @@ fn runOnce(
 
             if (return_type) |t| {
                 if (break_val.type != t) {
-                    return error.TypeMismatch;
+                    return self.pushError(
+                        alloc,
+                        self.span(instr_now),
+                        "unexpected type: expected '{f}', found: '{f}'",
+                        .{ t.print(self), break_val.type.print(self) },
+                    );
                 }
             }
             try set(
@@ -868,7 +969,9 @@ fn runOnce(
         },
         // .dbg_loc => {},
         .dbg_name => |v| {
-            var reg = try get(
+            var reg = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.val,
@@ -883,7 +986,9 @@ fn runOnce(
             );
         },
         .dbg_print => |v| {
-            const val = try get(
+            const val = try self.get(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.val,
@@ -928,13 +1033,15 @@ fn runOnce(
             frame.instr = v.block_end;
         },
         .conditional => |v| {
-            const takes_on_true_branch = try get(
+            const takes_on_true_branch = try self.getBool(
+                alloc,
+                instr_now,
                 config.verbose,
                 frame,
                 v.boolean,
             );
 
-            if (try takes_on_true_branch.asBool()) {
+            if (takes_on_true_branch) {
                 const block_frame = try self.pushFrame(
                     alloc,
                     config.verbose,
@@ -955,22 +1062,32 @@ fn runOnce(
     }
 }
 
+fn span(
+    self: *@This(),
+    instr: Instr.Id,
+) Span {
+    return self.ir_gen.instr_spans.items[@intFromEnum(instr)];
+}
+
 fn set(
     alloc: std.mem.Allocator,
     verbose: bool,
     frame: *Frame,
     reg: Instr.Id,
     val: Register,
-) error{OutOfMemory}!void {
+) Error!void {
     if (verbose) std.debug.print("set %{}\n", .{@intFromEnum(reg)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
 fn get(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
     verbose: bool,
     _frame: *Frame,
     reg: Value,
-) error{RegisterNotFound}!Register {
+) Error!Register {
     if (verbose) std.debug.print("get {f}\n", .{reg});
 
     var frame = _frame;
@@ -979,45 +1096,112 @@ fn get(
     };
 
     while (true) {
-        return frame.registers.get(idx) orelse {
+        if (frame.registers.get(idx)) |found| {
+            return found;
+        } else {
             @branchHint(.cold);
-            // FIXME: handle captures properly
-            if (frame.node.next) |next| {
-                frame = @fieldParentPtr("node", next);
-                continue;
-            }
-            return error.RegisterNotFound;
+        }
+
+        // FIXME: handle captures properly
+        const next = frame.node.next orelse {
+            return self.pushError(
+                alloc,
+                self.span(instr),
+                "internal error: register not found",
+                .{},
+            );
         };
+        frame = @fieldParentPtr("node", next);
     }
 }
 
 fn getPtr(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
     verbose: bool,
     _frame: *Frame,
     reg: Instr.Id,
-) error{RegisterNotFound}!*Register {
+) Error!*Register {
     if (verbose) std.debug.print("getPtr {f}\n", .{reg});
 
     var frame = _frame;
     while (true) {
-        return frame.registers.getPtr(reg) orelse {
+        if (frame.registers.getPtr(reg)) |found| {
+            return found;
+        } else {
             @branchHint(.cold);
-            // FIXME: handle captures properly
-            if (frame.node.next) |next| {
-                frame = @fieldParentPtr("node", next);
-                continue;
-            }
-            return error.RegisterNotFound;
+        }
+
+        // FIXME: handle captures properly
+        const next = frame.node.next orelse {
+            return self.pushError(
+                alloc,
+                self.span(instr),
+                "internal error: register not found",
+                .{},
+            );
         };
+        frame = @fieldParentPtr("node", next);
     }
 }
 
 fn getType(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
     verbose: bool,
     frame: *Frame,
     reg: Value,
-) error{ RegisterNotFound, TypeMismatch }!Type.Id {
-    return try (try get(verbose, frame, reg)).asTy();
+) Error!Type.Id {
+    const raw = try self.get(alloc, instr, verbose, frame, reg);
+    return try self.regAsType(alloc, instr, raw);
+}
+
+fn getBool(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
+    verbose: bool,
+    frame: *Frame,
+    reg: Value,
+) Error!bool {
+    const raw = try self.get(alloc, instr, verbose, frame, reg);
+    return try self.regAsBool(alloc, instr, raw);
+}
+
+fn regAsType(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
+    reg: Register,
+) Error!Type.Id {
+    if (reg.type != .type) return {
+        return self.pushError(
+            alloc,
+            self.span(instr),
+            "unexpected type: expected 'type', found: '{f}'",
+            .{reg.type.print(self)},
+        );
+    };
+    return reg.val.type;
+}
+
+fn regAsBool(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
+    reg: Register,
+) Error!bool {
+    if (reg.type != .bool) return {
+        return self.pushError(
+            alloc,
+            self.span(instr),
+            "unexpected type: expected 'bool', found: '{f}'",
+            .{reg.type.print(self)},
+        );
+    };
+    return reg.val.bool;
 }
 
 fn sizeOf(
@@ -1166,10 +1350,11 @@ fn fetchInstr(
 fn addCommonType(
     self: *@This(),
     alloc: std.mem.Allocator,
+    instr: Instr.Id,
     ty: Type,
     expected_ty_id: Type.Id,
-) error{ TypeTooLarge, OutOfMemory }!void {
-    const actual_ty_id = try self.resolveType(alloc, ty);
+) Error!void {
+    const actual_ty_id = try self.resolveType(alloc, instr, ty);
     std.debug.assert(expected_ty_id == actual_ty_id);
 }
 
@@ -1204,8 +1389,9 @@ fn intSize(comptime T: type) IntSize {
 fn resolveType(
     self: *@This(),
     alloc: std.mem.Allocator,
+    instr: Instr.Id,
     _ty: Type,
-) error{ TypeTooLarge, OutOfMemory }!Type.Id {
+) Error!Type.Id {
     var ty = _ty;
 
     // std.debug.print("resolve type {}\n", .{ty});
@@ -1228,7 +1414,14 @@ fn resolveType(
         .float => |v| TypeInfo.ofFloat(v.bits),
         .array => |v| b: {
             const child = self.readTypeInfo(v.child);
-            break :b child.repeat(v.len) orelse return error.TypeTooLarge;
+            break :b child.repeat(v.len) orelse {
+                return self.pushError(
+                    alloc,
+                    self.span(instr),
+                    "type too large",
+                    .{},
+                );
+            };
         },
         .slice => TypeInfo.of(Slice),
         .pointer => TypeInfo.of(Pointer),
@@ -1261,9 +1454,12 @@ fn readTypeInfo(
 }
 
 fn cast(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr.Id,
     _val: Register,
     as: Type.Id,
-) error{OperationUnsupportedForType}!Register {
+) Error!Register {
     var val = _val;
 
     if (val.type == .undefined) {
@@ -1273,17 +1469,28 @@ fn cast(
 
     switch (as) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |into| {
-            val.val = @unionInit(PrimitiveValue, @tagName(into), b: switch (val.val) {
+            switch (val.val) {
                 inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
-                    break :b std.math.lossyCast(PrimitiveOf(into), from);
+                    val.val = @unionInit(
+                        PrimitiveValue,
+                        @tagName(into),
+                        std.math.lossyCast(PrimitiveOf(into), from),
+                    );
+                    val.type = as;
+                    return val;
                 },
-                else => return error.OperationUnsupportedForType,
-            });
+                else => {},
+            }
         },
-        else => return error.OperationUnsupportedForType,
+        else => {},
     }
-    val.type = as;
-    return val;
+
+    return self.pushError(
+        alloc,
+        self.span(instr),
+        "cannot cast '{f}' to '{f}'",
+        .{ val.type.print(self), as.print(self) },
+    );
 }
 
 // fn createType(
