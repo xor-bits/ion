@@ -8,6 +8,11 @@ const Value = IrGenerator.Value;
 const Span = @import("Tokenizer.zig").Span;
 const VirtualMachine = @This();
 
+pub const Config = struct {
+    gas: ?usize = null,
+    verbose: bool = false,
+};
+
 pub const Frame = struct {
     block: Instr.Id = .start,
     instr: Instr.Id = .start,
@@ -511,6 +516,7 @@ pub fn deinit(
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
+    config: Config,
 ) Error!void {
     const bottom_frame = try self.pushFrame(alloc, .start);
     _ = bottom_frame;
@@ -543,12 +549,16 @@ pub fn run(
     } }, .slice_u8);
 
     std.debug.print("VM START\n", .{});
+    var gas: ?usize = config.gas;
+    const gas_ptr = if (gas) |*_g| _g else null;
     while (true) {
         self.runOnce(
             alloc,
             instrs,
             extras,
             source,
+            config,
+            gas_ptr,
         ) catch |err| switch (err) {
             error.IpOutOfBounds => break,
             else => return err,
@@ -576,7 +586,14 @@ fn runOnce(
     instrs: std.MultiArrayList(Instr).Slice,
     extras: []const u32,
     source: []const u8,
+    config: Config,
+    gas: ?*usize,
 ) Error!void {
+    if (gas) |gas_left| {
+        if (gas_left.* == 0) return error.IpOutOfBounds;
+        gas_left.* -= 1;
+    }
+
     const frame = self.topFrame();
 
     const instr_now = frame.instr;
@@ -586,6 +603,10 @@ fn runOnce(
     };
     frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
 
+    if (config.verbose) std.debug.print("exec {f} ({t})\n", .{
+        instr_now,
+        opcode,
+    });
     errdefer std.debug.print("error at {f} ({t})\n", .{
         instr_now,
         opcode,
@@ -595,6 +616,7 @@ fn runOnce(
             const str = v.value.read(source);
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 Register{ .type = .slice_u8, .val = .{ .string = str } },
@@ -603,6 +625,7 @@ fn runOnce(
         .int_lit => |v| {
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 Register.intLit(v.value),
@@ -610,7 +633,11 @@ fn runOnce(
         },
         // .float_lit => {},
         .call => |v| {
-            const func_reg = try get(frame, v.func);
+            const func_reg = try get(
+                config.verbose,
+                frame,
+                v.func,
+            );
 
             const ip = func_reg.val.func.entry;
 
@@ -626,9 +653,14 @@ fn runOnce(
             );
 
             for (args, 0..) |arg, i| {
-                const passed_arg = try get(frame, arg.val);
+                const passed_arg = try get(
+                    config.verbose,
+                    frame,
+                    arg.val,
+                );
                 try set(
                     alloc,
+                    config.verbose,
                     call_frame,
                     @enumFromInt(@intFromEnum(ip) + i),
                     passed_arg,
@@ -636,7 +668,11 @@ fn runOnce(
             }
         },
         .unary_op => |v| {
-            const val: Register = try get(frame, v.value);
+            const val: Register = try get(
+                config.verbose,
+                frame,
+                v.value,
+            );
             errdefer {
                 std.debug.print("val = {f}; {any}, op = {f}\n", .{
                     val.type.print(self),
@@ -671,14 +707,23 @@ fn runOnce(
             };
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 dst,
             );
         },
         .binary_op => |v| {
-            const lhs: Register = try get(frame, v.lhs);
-            const rhs: Register = try get(frame, v.rhs);
+            const lhs: Register = try get(
+                config.verbose,
+                frame,
+                v.lhs,
+            );
+            const rhs: Register = try get(
+                config.verbose,
+                frame,
+                v.rhs,
+            );
             errdefer {
                 std.debug.print("lhs = {f}; {any}, rhs = {f}; {any}, op = {f}\n", .{
                     lhs.type.print(self),
@@ -694,6 +739,7 @@ fn runOnce(
             };
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 dst,
@@ -703,17 +749,27 @@ fn runOnce(
         // .alloca => {},
         .write => |v| {
             const target = try getPtr(
+                config.verbose,
                 frame,
                 v.target.asIndex() orelse
                     return error.AssignToRValue,
             );
-            target.* = try get(frame, v.val);
+            target.* = try get(
+                config.verbose,
+                frame,
+                v.val,
+            );
         },
         // .decl => {},
         .func => |v| {
-            const proto = try getType(frame, v.proto);
+            const proto = try getType(
+                config.verbose,
+                frame,
+                v.proto,
+            );
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 Register.func(proto, frame.instr),
@@ -731,9 +787,17 @@ fn runOnce(
 
             for (params, param_types) |_param, *param_type| {
                 const param: IrGenerator.Extra.Param = @bitCast(_param);
-                param_type.* = try getType(frame, param.val);
+                param_type.* = try getType(
+                    config.verbose,
+                    frame,
+                    param.val,
+                );
             }
-            const return_type = try getType(frame, proto.return_type);
+            const return_type = try getType(
+                config.verbose,
+                frame,
+                proto.return_type,
+            );
 
             const proto_type = try self.resolveType(alloc, .{ .func = .{
                 .@"extern" = false,
@@ -742,6 +806,7 @@ fn runOnce(
             } });
             try set(
                 alloc,
+                config.verbose,
                 frame,
                 instr_now,
                 Register.ty(proto_type),
@@ -752,7 +817,11 @@ fn runOnce(
             // std.debug.print("{any}\n", .{p.val});
         },
         .@"break" => |v| {
-            const break_val = try get(frame, v.val);
+            const break_val = try get(
+                config.verbose,
+                frame,
+                v.val,
+            );
 
             while (self.topFrame().block != v.block) {
                 self.popFrame();
@@ -778,12 +847,26 @@ fn runOnce(
         },
         // .dbg_loc => {},
         .dbg_name => |v| {
-            var reg = try get(frame, v.val);
+            var reg = try get(
+                config.verbose,
+                frame,
+                v.val,
+            );
             reg.name = v.name;
-            try set(alloc, frame, instr_now, reg);
+            try set(
+                alloc,
+                config.verbose,
+                frame,
+                instr_now,
+                reg,
+            );
         },
         .dbg_print => |v| {
-            const val = try get(frame, v.val);
+            const val = try get(
+                config.verbose,
+                frame,
+                v.val,
+            );
             switch (val.val) {
                 .type => |t| {
                     std.debug.print("{f}\n", .{t.print(self)});
@@ -820,7 +903,11 @@ fn runOnce(
             frame.instr = v.block_end;
         },
         .conditional => |v| {
-            const takes_on_true_branch = try get(frame, v.boolean);
+            const takes_on_true_branch = try get(
+                config.verbose,
+                frame,
+                v.boolean,
+            );
 
             if (try takes_on_true_branch.asBool()) {
                 const block_frame = try self.pushFrame(alloc, frame.instr);
@@ -837,52 +924,67 @@ fn runOnce(
 
 fn set(
     alloc: std.mem.Allocator,
+    verbose: bool,
     frame: *Frame,
     reg: Instr.Id,
     val: Register,
 ) error{OutOfMemory}!void {
-    // std.debug.print("set %{}\n", .{@intFromEnum(reg)});
+    if (verbose) std.debug.print("set %{}\n", .{@intFromEnum(reg)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
 fn get(
-    frame: *Frame,
+    verbose: bool,
+    _frame: *Frame,
     reg: Value,
 ) error{RegisterNotFound}!Register {
-    // std.debug.print("get {f}\n", .{reg});
+    if (verbose) std.debug.print("get {f}\n", .{reg});
+
+    var frame = _frame;
     const idx = reg.asIndex() orelse {
         return builtin_registers[@intFromEnum(reg)];
     };
-    return frame.registers.get(idx) orelse {
-        @branchHint(.cold);
-        // FIXME: handle captures properly
-        if (frame.node.next) |next| {
-            return try get(@fieldParentPtr("node", next), reg);
-        }
-        return error.RegisterNotFound;
-    };
+
+    while (true) {
+        return frame.registers.get(idx) orelse {
+            @branchHint(.cold);
+            // FIXME: handle captures properly
+            if (frame.node.next) |next| {
+                frame = @fieldParentPtr("node", next);
+                continue;
+            }
+            return error.RegisterNotFound;
+        };
+    }
 }
 
 fn getPtr(
-    frame: *Frame,
+    verbose: bool,
+    _frame: *Frame,
     reg: Instr.Id,
 ) error{RegisterNotFound}!*Register {
-    // std.debug.print("getPtr {f}\n", .{reg});
-    return frame.registers.getPtr(reg) orelse {
-        @branchHint(.cold);
-        // FIXME: handle captures properly
-        if (frame.node.next) |next| {
-            return try getPtr(@fieldParentPtr("node", next), reg);
-        }
-        return error.RegisterNotFound;
-    };
+    if (verbose) std.debug.print("getPtr {f}\n", .{reg});
+
+    var frame = _frame;
+    while (true) {
+        return frame.registers.getPtr(reg) orelse {
+            @branchHint(.cold);
+            // FIXME: handle captures properly
+            if (frame.node.next) |next| {
+                frame = @fieldParentPtr("node", next);
+                continue;
+            }
+            return error.RegisterNotFound;
+        };
+    }
 }
 
 fn getType(
+    verbose: bool,
     frame: *Frame,
     reg: Value,
 ) error{ RegisterNotFound, TypeMismatch }!Type.Id {
-    return try (try get(frame, reg)).asTy();
+    return try (try get(verbose, frame, reg)).asTy();
 }
 
 fn sizeOf(

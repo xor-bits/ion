@@ -64,7 +64,7 @@ pub fn main() !u8 {
 
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
     defer vm.deinit(alloc);
-    try vm.run(alloc);
+    try vm.run(alloc, .{});
 
     // vm.dump();
 

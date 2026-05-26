@@ -773,7 +773,7 @@ pub fn convertIf(
 
     const if_block = try self.pushInstr(
         alloc,
-        .{ .block = .{ .block_end = self.nextInstr() } },
+        .{ .block = undefined },
     );
     const if_block_entry = self.nextInstr();
 
@@ -785,11 +785,7 @@ pub fn convertIf(
 
     const conditional = try self.pushInstr(
         alloc,
-        .{ .conditional = .{
-            .boolean = boolean,
-            .on_false_block_end = self.nextInstr(),
-            .on_true_block_end = self.nextInstr(),
-        } },
+        .{ .conditional = undefined },
     );
 
     const on_true_val = try self.convertScope(
