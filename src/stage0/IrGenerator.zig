@@ -213,6 +213,11 @@ pub const Instr = union(enum) {
     alloca: struct {
         ty: Value,
     },
+    // FIXME: temporary instruction until pointers are supported
+    write: struct {
+        target: Value,
+        val: Value,
+    },
     /// creates a new function or a global
     /// only usable in a struct
     decl: struct {
@@ -437,7 +442,10 @@ fn dumpBlock(
                 std.debug.print("])\n", .{});
             },
             .unary_op => |v| {
-                std.debug.print("unary_op(op={f}, value={f})\n", .{ v.op, v.value });
+                std.debug.print("unary_op(op={f}, value={f})\n", .{
+                    v.op,
+                    v.value,
+                });
             },
             .binary_op => |v| {
                 std.debug.print("binary_op(op={f}, lhs={f}, rhs={f})\n", .{
@@ -452,8 +460,16 @@ fn dumpBlock(
             .alloca => |v| {
                 std.debug.print("alloca(type={f})\n", .{v.ty});
             },
+            .write => |v| {
+                std.debug.print("write(target={f}, val={f})\n", .{
+                    v.target,
+                    v.val,
+                });
+            },
             .decl => |v| {
-                std.debug.print("decl(name=\"{s}\", block={{\n", .{v.name.read(self.source())});
+                std.debug.print("decl(name=\"{s}\", block={{\n", .{
+                    v.name.read(self.source()),
+                });
                 self.dumpBlock(cur, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
@@ -687,20 +703,16 @@ pub fn convertAssign(
         assign.lhs,
     );
 
-    const value = try self.convertExpr(
+    const val = try self.convertExpr(
         alloc,
         name_hint,
         assign.rhs,
     );
 
-    _ = target;
-    _ = value;
-    @panic("todo");
-
-    // try self.pushInstr(alloc, .{ .assign = .{
-    //     .target = target,
-    //     .value = value,
-    // } });
+    _ = try self.pushInstr(alloc, .{ .write = .{
+        .target = target,
+        .val = val,
+    } });
 }
 
 pub fn convertIf(

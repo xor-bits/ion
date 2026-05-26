@@ -85,8 +85,8 @@ let main = fn() {
     loop {
         // printf("%u\n\x00".ptr, a);
         let tmp = a + b;
-        // a = b;
-        // b = tmp;
+        a = b;
+        b = tmp;
         // sleep(1);
     };
     // print("done");

@@ -427,6 +427,7 @@ pub const Error = error{
     TypeMismatch,
     OperationUnsupportedForType,
     TypeTooLarge,
+    AssignToRValue,
 };
 
 // strings: std.AutoHashMapUnmanaged(Instr.Index, []const u8) = .{},
@@ -674,6 +675,18 @@ fn runOnce(
         },
         // .array => {},
         // .alloca => {},
+        .write => |v| {
+            const target = v.target.asIndex() orelse {
+                return error.AssignToRValue;
+            };
+            const val = try get(frame, v.val);
+            try reset(
+                alloc,
+                frame,
+                target,
+                val,
+            );
+        },
         // .decl => {},
         .func => |v| {
             const proto = try getType(frame, v.proto);
@@ -754,6 +767,16 @@ fn runOnce(
         // .conditional => {},
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
     }
+}
+
+fn reset(
+    alloc: std.mem.Allocator,
+    frame: *Frame,
+    reg: Instr.Id,
+    val: Register,
+) error{OutOfMemory}!void {
+    // std.debug.print("reset %{}\n", .{@intFromEnum(reg)});
+    try frame.registers.put(alloc, reg, val);
 }
 
 fn set(
