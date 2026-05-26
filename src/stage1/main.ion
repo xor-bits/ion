@@ -13,10 +13,10 @@ let f = fn(
 
 let func = fn(b: bool): u32 {
     if b {
-        return 4;
+        return 4 as u32;
     };
 
-    5
+    5 as u32
 };
 
 let main = fn() {

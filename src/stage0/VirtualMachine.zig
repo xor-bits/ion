@@ -20,6 +20,7 @@ pub const Frame = struct {
     arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
     node: std.SinglyLinkedList.Node = .{},
     return_register: Instr.Id = .start,
+    return_type: ?Type.Id = null,
     symbol: Span = .{},
 
     pub fn clear(
@@ -441,7 +442,7 @@ pub const Function = extern struct {
 
 pub const Error = error{
     OutOfMemory,
-    MainNotCallable,
+    NotCallable,
     IpOutOfBounds,
     RegisterNotFound,
     TypeMismatch,
@@ -518,16 +519,11 @@ pub fn run(
     alloc: std.mem.Allocator,
     config: Config,
 ) Error!void {
-    const bottom_frame = try self.pushFrame(
+    _ = try self.pushFrame(
         alloc,
         config.verbose,
         .start,
     );
-    _ = bottom_frame;
-    // bottom_frame.instr = self.ir_gen.main.asIndex() orelse {
-    //     @branchHint(.cold);
-    //     return error.MainNotCallable;
-    // };
 
     const instrs = self.ir_gen.instrs.slice();
     const extras = self.ir_gen.extras.items;
@@ -642,6 +638,8 @@ fn runOnce(
                 frame,
                 v.func,
             );
+            const proto = self.readType(func_reg.type);
+            if (proto != .func) return error.NotCallable;
 
             const ip = func_reg.val.func.entry;
 
@@ -652,6 +650,7 @@ fn runOnce(
             );
             call_frame.symbol = func_reg.name;
             frame.return_register = instr_now;
+            frame.return_type = proto.func.@"return";
             // std.debug.print("{s}\n", .{func_reg.name.read(source)});
 
             const args = IrGenerator.Extra.getParams(
@@ -666,6 +665,9 @@ fn runOnce(
                     frame,
                     arg.val,
                 );
+                if (passed_arg.type != proto.func.params[i]) {
+                    return error.TypeMismatch;
+                }
                 try set(
                     alloc,
                     config.verbose,
@@ -837,6 +839,11 @@ fn runOnce(
             self.popFrame(config.verbose);
 
             const new_top_frame = self.topFrame();
+            if (new_top_frame.return_type) |return_type| {
+                if (break_val.type != return_type) {
+                    return error.TypeMismatch;
+                }
+            }
             try set(
                 alloc,
                 config.verbose,
@@ -912,6 +919,7 @@ fn runOnce(
                 frame.instr,
             );
             frame.return_register = instr_now;
+            frame.return_type = null;
             frame.instr = v.block_end;
         },
         .conditional => |v| {
@@ -922,19 +930,21 @@ fn runOnce(
             );
 
             if (try takes_on_true_branch.asBool()) {
-                const block_frame = try self.pushFrame(
+                _ = try self.pushFrame(
                     alloc,
                     config.verbose,
                     frame.instr,
                 );
-                block_frame.return_register = instr_now;
+                frame.return_register = instr_now;
+                frame.return_type = null;
             } else {
-                const block_frame = try self.pushFrame(
+                _ = try self.pushFrame(
                     alloc,
                     config.verbose,
                     v.on_true_block_end,
                 );
-                block_frame.return_register = instr_now;
+                frame.return_register = instr_now;
+                frame.return_type = null;
             }
             frame.instr = v.on_false_block_end;
         },
