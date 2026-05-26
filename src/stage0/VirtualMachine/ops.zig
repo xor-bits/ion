@@ -117,6 +117,12 @@ pub fn field(lhs: Register, rhs: Register) Error!Register {
     std.debug.panic("TODO: field op", .{});
 }
 
+pub fn index(lhs: Register, rhs: Register) Error!Register {
+    _ = lhs;
+    _ = rhs;
+    std.debug.panic("TODO: index op", .{});
+}
+
 pub fn range(lhs: Register, rhs: Register) Error!Register {
     _ = lhs;
     _ = rhs;
@@ -136,6 +142,23 @@ fn negFloatFunc(val: anytype) @TypeOf(val) {
 }
 
 pub fn not(val: Register) Error!Register {
+    if (val.val != .bool) return Error.OperationUnsupportedForType;
+    return .{ .type = .bool, .val = .{
+        .bool = !val.val.bool,
+    } };
+}
+
+    // neg,
+    // not,
+    // slice,
+    // slice_mut,
+    // pointer,
+    // pointer_mut,
+    // address,
+    // address_mut,
+    // deref,
+
+pub fn slice(val: Register) Error!Register {
     if (val.val != .bool) return Error.OperationUnsupportedForType;
     return .{ .type = .bool, .val = .{
         .bool = !val.val.bool,

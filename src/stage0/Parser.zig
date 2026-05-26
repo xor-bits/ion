@@ -173,7 +173,7 @@ pub const BinaryOp = enum {
     ge,
 
     field,
-
+    index,
     range,
 
     pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
@@ -193,7 +193,7 @@ pub const BinaryOp = enum {
             .ge => ">=",
 
             .field => ".",
-
+            .index => "[",
             .range => "..",
         }});
     }

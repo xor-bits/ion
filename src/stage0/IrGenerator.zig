@@ -52,11 +52,11 @@ pub const Value = enum(u32) {
         };
     }
 
-    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+    pub fn format(self: @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
         if (self.asIndex()) |instr| {
-            try writer.print("%{}", .{@intFromEnum(instr)});
+            try writer.print("{f}", .{instr});
         } else {
-            try writer.print("@{t}", .{self.*});
+            try writer.print("@{t}", .{self});
         }
     }
 };
@@ -174,6 +174,10 @@ pub const Instr = union(enum) {
         pub fn asValue(self: @This()) Value {
             return @enumFromInt(@intFromEnum(self) + Value.builtin_count);
         }
+
+        pub fn format(self: @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+            try writer.print("%{}", .{@intFromEnum(self)});
+        }
     };
 
     str_lit: struct {
@@ -209,10 +213,6 @@ pub const Instr = union(enum) {
     alloca: struct {
         ty: Value,
     },
-    as: struct {
-        ty: Value,
-        val: Value,
-    },
     /// creates a new function or a global
     /// only usable in a struct
     decl: struct {
@@ -237,6 +237,10 @@ pub const Instr = union(enum) {
     @"break": struct {
         block: Instr.Id,
         val: Value,
+    },
+    /// loops back to the start of a block in code
+    @"continue": struct {
+        block: Instr.Id,
     },
     /// tells which source line:col the next instructions are from
     dbg_loc: struct {
@@ -407,7 +411,7 @@ fn dumpBlock(
     while (@intFromEnum(cur) < self.instrs.len) {
         const instr = self.instrs.get(@intFromEnum(cur));
         for (0..indent) |_| std.debug.print("    ", .{});
-        std.debug.print("%{} = ", .{@intFromEnum(cur)});
+        std.debug.print("{f} = ", .{cur});
         cur = @enumFromInt(@intFromEnum(cur) + 1);
 
         switch (instr) {
@@ -448,9 +452,6 @@ fn dumpBlock(
             .alloca => |v| {
                 std.debug.print("alloca(type={f})\n", .{v.ty});
             },
-            .as => |v| {
-                std.debug.print("as(type={f}, value={f})\n", .{ v.ty, v.val });
-            },
             .decl => |v| {
                 std.debug.print("decl(name=\"{s}\", block={{\n", .{v.name.read(self.source())});
                 self.dumpBlock(cur, indent + 1);
@@ -486,7 +487,11 @@ fn dumpBlock(
                 std.debug.print("param\n", .{});
             },
             .@"break" => |v| {
-                std.debug.print("break(block=%{}, value={f})\n", .{ @intFromEnum(v.block), v.val });
+                std.debug.print("break(block={f}, value={f})\n", .{ v.block, v.val });
+                return;
+            },
+            .@"continue" => |v| {
+                std.debug.print("continue(block={f})\n", .{v.block});
                 return;
             },
             .dbg_loc => |v| {
@@ -502,7 +507,7 @@ fn dumpBlock(
                 std.debug.print("dbg_print(val={f})\n", .{v.val});
             },
             .block => |v| {
-                std.debug.print("block(proto={{\n", .{});
+                std.debug.print("block(body={{\n", .{});
                 self.dumpBlock(cur, indent + 1);
                 for (0..indent) |_| std.debug.print("    ", .{});
                 std.debug.print("}})\n", .{});
@@ -563,9 +568,10 @@ pub fn convertDecl(
             type_hint,
         );
 
-        val = try self.pushInstrGetValue(alloc, .{ .as = .{
-            .ty = ty,
-            .val = val,
+        val = try self.pushInstrGetValue(alloc, .{ .binary_op = .{
+            .lhs = val,
+            .op = .as,
+            .rhs = ty,
         } });
     }
 
@@ -602,6 +608,11 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
+        .loop => return try self.convertLoop(
+            alloc,
+            name_hint,
+            node_id,
+        ),
         .scope => return try self.convertScope(
             alloc,
             name_hint,
@@ -628,6 +639,11 @@ pub fn convertExpr(
             node_id,
         ),
         .field_acc => return try self.convertFieldAcc(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .index_acc => return try self.convertIndexAcc(
             alloc,
             name_hint,
             node_id,
@@ -770,9 +786,10 @@ pub fn convertProto(
             &name_hint_param.push(param_name),
             param.type,
         );
-        const param_value = try self.pushInstrGetValue(alloc, .{ .as = .{
-            .ty = param_type,
-            .val = .undefined,
+        const param_value = try self.pushInstrGetValue(alloc, .{ .binary_op = .{
+            .lhs = .undefined,
+            .op = .as,
+            .rhs = param_type,
         } });
 
         try self.symbols.createVar(alloc, param_name, param_value);
@@ -866,6 +883,38 @@ pub fn convertFn(
         .body_block_end = body_block_end,
     } });
     return func_block.asValue();
+}
+
+pub fn convertLoop(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Value {
+    const loop = self.nodes()[node_id].loop;
+
+    const loop_block = try self.pushInstr(alloc, .{ .block = undefined });
+    const loop_entry = self.nextInstr();
+
+    // TODO: give a warning when the loop scope tries to break a
+    // value implicitly, because loops have an implicit continue
+    // statement at the end
+    _ = try self.convertScope(
+        alloc,
+        name_hint,
+        loop.scope,
+    );
+
+    _ = try self.pushInstr(alloc, .{ .@"continue" = .{
+        .block = loop_entry,
+    } });
+
+    const loop_block_end = self.nextInstr();
+    self.overwriteInstr(loop_block, .{ .block = .{
+        .block_end = loop_block_end,
+    } });
+
+    return Value.void;
 }
 
 pub fn convertScope(
@@ -1052,6 +1101,33 @@ pub fn convertFieldAcc(
         .lhs = container,
         .rhs = field,
         .op = BinaryOp.field,
+    } });
+    return result.asValue();
+}
+
+pub fn convertIndexAcc(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Value {
+    const index_acc = self.nodes()[node_id].index_acc;
+
+    const container = try self.convertExpr(
+        alloc,
+        name_hint,
+        index_acc.val,
+    );
+    const index = try self.convertExpr(
+        alloc,
+        name_hint,
+        index_acc.expr,
+    );
+
+    const result = try self.pushInstr(alloc, .{ .binary_op = .{
+        .lhs = container,
+        .rhs = index,
+        .op = BinaryOp.index,
     } });
     return result.asValue();
 }

@@ -16,6 +16,13 @@ pub const Frame = struct {
     node: std.SinglyLinkedList.Node = .{},
     return_register: Instr.Id = .start,
     symbol: Span = .{},
+
+    pub fn clear(
+        self: *@This(),
+    ) void {
+        _ = self.arena.reset(.retain_capacity);
+        self.registers.clearRetainingCapacity();
+    }
 };
 
 pub const Register = struct {
@@ -23,7 +30,16 @@ pub const Register = struct {
     val: PrimitiveValue,
     name: Span = .{},
 
-    fn ty(type_id: Type.Id) @This() {
+    fn asTy(
+        self: @This(),
+    ) error{TypeMismatch}!Type.Id {
+        if (self.type != .type) return error.TypeMismatch;
+        return self.val.type;
+    }
+
+    fn ty(
+        type_id: Type.Id,
+    ) @This() {
         return .{ .type = .type, .val = .{
             .type = type_id,
         } };
@@ -33,7 +49,9 @@ pub const Register = struct {
         return .{ .type = .void, .val = .void };
     }
 
-    fn boolLit(b: bool) @This() {
+    fn boolLit(
+        b: bool,
+    ) @This() {
         return .{ .type = .bool, .val = .{
             .bool = b,
         } };
@@ -43,13 +61,17 @@ pub const Register = struct {
         return .{ .type = .undefined, .val = .undefined };
     }
 
-    fn intLit(i: u64) @This() {
+    fn intLit(
+        i: u64,
+    ) @This() {
         return .{ .type = ._isize, .val = .{
             .i64 = @bitCast(i),
         } };
     }
 
-    fn floatLit(f: u64) @This() {
+    fn floatLit(
+        f: u64,
+    ) @This() {
         return .{ .type = .f64, .val = .{
             .f64 = f,
         } };
@@ -537,6 +559,8 @@ fn runOnce(
     extras: []const u32,
     source: []const u8,
 ) Error!void {
+    _ = source;
+
     const frame = self.topFrame();
 
     const instr_now = frame.instr;
@@ -546,7 +570,7 @@ fn runOnce(
     };
     frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
 
-    std.debug.print("exec {t}\n", .{opcode});
+    // std.debug.print("exec {t}\n", .{opcode});
     switch (opcode) {
         // .str_lit => {},
         .int_lit => |v| {
@@ -566,7 +590,7 @@ fn runOnce(
             const call_frame = try self.pushFrame(alloc, ip);
             call_frame.return_register = instr_now;
             call_frame.symbol = func_reg.name;
-            std.debug.print("{s}\n", .{func_reg.name.read(source)});
+            // std.debug.print("{s}\n", .{func_reg.name.read(source)});
 
             const args = IrGenerator.Extra.getParams(
                 extras,
@@ -584,7 +608,47 @@ fn runOnce(
                 );
             }
         },
-        // .unary_op => {},
+        .unary_op => |v| {
+            const val: Register = try get(frame, v.value);
+            errdefer {
+                std.debug.print("val = {f}; {any}, op = {f}\n", .{
+                    val.type.print(self),
+                    val.val,
+                    v.op,
+                });
+            }
+            const dst: Register = try switch (v.op) {
+                .slice => Register.ty(try self.resolveType(alloc, .{ .slice = .{
+                    .mut = false,
+                    .child = try val.asTy(),
+                } })),
+                .slice_mut => Register.ty(try self.resolveType(alloc, .{ .slice = .{
+                    .mut = true,
+                    .child = try val.asTy(),
+                } })),
+                .pointer => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
+                    .mut = false,
+                    .child = try val.asTy(),
+                } })),
+                .pointer_mut => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
+                    .mut = true,
+                    .child = try val.asTy(),
+                } })),
+                .address, .address_mut => {
+                    @panic("todo");
+                },
+                .deref => {
+                    @panic("todo");
+                },
+                inline else => |op| @field(ops, @tagName(op))(val),
+            };
+            try set(
+                alloc,
+                frame,
+                instr_now,
+                dst,
+            );
+        },
         .binary_op => |v| {
             const lhs: Register = try get(frame, v.lhs);
             const rhs: Register = try get(frame, v.rhs);
@@ -598,6 +662,7 @@ fn runOnce(
                 });
             }
             const dst: Register = try switch (v.op) {
+                .as => try cast(lhs, try rhs.asTy()),
                 inline else => |op| @field(ops, @tagName(op))(lhs, rhs),
             };
             try set(
@@ -609,53 +674,6 @@ fn runOnce(
         },
         // .array => {},
         // .alloca => {},
-        .as => |v| {
-            const ty = try getType(frame, v.ty);
-            var val = try get(frame, v.val);
-
-            if (val.type == .undefined) {
-                val.type = ty;
-            } else {
-                switch (ty) {
-                    inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |into| {
-                        val.val = @unionInit(PrimitiveValue, @tagName(into), b: switch (val.val) {
-                            inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
-                                break :b std.math.lossyCast(PrimitiveOf(into), from);
-                            },
-                            else => return error.OperationUnsupportedForType,
-                        });
-                    },
-                    else => return error.OperationUnsupportedForType,
-                    // .u8 => val.val = .{ .u8 = b: switch (val.val) {
-                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
-                    //         break :b std.math.lossyCast(u8, from);
-                    //     },
-                    //     else => return error.OperationUnsupportedForType,
-                    // } },
-                    // .u16 => val.val = .{ .u16 = b: switch (val.val) {
-                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
-                    //         break :b std.math.lossyCast(u8, from);
-                    //     },
-                    //     else => return error.OperationUnsupportedForType,
-                    // } },
-                    // .u32 => val.val = .{ .u16 = b: switch (val.val) {
-                    //     inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
-                    //         break :b std.math.lossyCast(u8, from);
-                    //     },
-                    //     else => return error.OperationUnsupportedForType,
-                    // } },
-                }
-            }
-
-            // std.math.cast(comptime T: type, x: anytype)
-
-            try set(
-                alloc,
-                frame,
-                instr_now,
-                val,
-            );
-        },
         // .decl => {},
         .func => |v| {
             const proto = try getType(frame, v.proto);
@@ -714,6 +732,14 @@ fn runOnce(
                 break_val,
             );
         },
+        .@"continue" => |v| {
+            while (self.topFrame().block != v.block) {
+                self.popFrame();
+            }
+            const new_top_frame = self.topFrame();
+            new_top_frame.clear();
+            new_top_frame.instr = new_top_frame.block;
+        },
         // .dbg_loc => {},
         .dbg_name => |v| {
             var reg = try get(frame, v.val);
@@ -721,7 +747,10 @@ fn runOnce(
             try set(alloc, frame, instr_now, reg);
         },
         // .dbg_print => {},
-        // .block => {},
+        .block => {
+            const block_frame = try self.pushFrame(alloc, frame.instr);
+            block_frame.return_register = instr_now;
+        },
         // .conditional => {},
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
     }
@@ -759,9 +788,7 @@ fn getType(
     frame: *Frame,
     reg: Value,
 ) error{ RegisterNotFound, TypeMismatch }!Type.Id {
-    const untyped = try get(frame, reg);
-    if (untyped.type != .type) return error.TypeMismatch;
-    return untyped.val.type;
+    return try (try get(frame, reg)).asTy();
 }
 
 fn sizeOf(
@@ -884,8 +911,7 @@ fn pushFrame(
 
 fn popFrame(self: *@This()) void {
     const frame = frameFromNode(self.frames.popFirst().?);
-    _ = frame.arena.reset(.retain_capacity);
-    frame.registers.clearRetainingCapacity();
+    frame.clear();
     self.reusable_frames.prepend(&frame.node);
 }
 
@@ -997,6 +1023,31 @@ fn readTypeInfo(
     ty: Type.Id,
 ) TypeInfo {
     return self.type_infos.get(@intFromEnum(ty));
+}
+
+fn cast(
+    _val: Register,
+    as: Type.Id,
+) error{OperationUnsupportedForType}!Register {
+    var val = _val;
+
+    if (val.type == .undefined) {
+        val.type = as;
+        return val;
+    }
+
+    switch (as) {
+        inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |into| {
+            val.val = @unionInit(PrimitiveValue, @tagName(into), b: switch (val.val) {
+                inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |from| {
+                    break :b std.math.lossyCast(PrimitiveOf(into), from);
+                },
+                else => return error.OperationUnsupportedForType,
+            });
+        },
+        else => return error.OperationUnsupportedForType,
+    }
+    return val;
 }
 
 // fn createType(
