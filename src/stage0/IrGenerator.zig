@@ -275,21 +275,32 @@ pub const Instr = union(enum) {
     // },
 };
 
+pub const ErrorMsg = struct {
+    span: Span,
+    message: []const u8,
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.print("{s}", .{self.message});
+    }
+};
+
+pub const Diagnostic = @import("main.zig").Diagnostic(ErrorMsg);
+
 pub const Error = error{
-    TooManyRegisters,
+    InvalidSemantic,
     OutOfMemory,
-    VariableNotFound,
-    MainFunctionMissing,
-    NotInFunction,
-    NotInLoop,
 };
 
 function_context: std.ArrayList(Instr.Id) = .empty,
 break_context: std.ArrayList(Instr.Id) = .empty,
 continue_context: std.ArrayList(Instr.Id) = .empty,
-instrs: std.MultiArrayList(Instr) = .{},
-extras: std.ArrayList(u32) = .{},
-instr_spans: std.ArrayList(Span) = .{},
+instrs: std.MultiArrayList(Instr) = .empty,
+extras: std.ArrayList(u32) = .empty,
+instr_spans: std.ArrayList(Span) = .empty,
+errors: std.ArrayList(ErrorMsg) = .empty,
 symbols: Symbols = .{},
 main: Value = .undefined,
 // builder: Builder = .{},
@@ -306,6 +317,10 @@ pub fn deinit(
     alloc: std.mem.Allocator,
 ) void {
     // self.builder.deinit(alloc);
+    for (self.errors.items) |err| {
+        alloc.free(err.message);
+    }
+    self.errors.deinit(alloc);
     self.instr_spans.deinit(alloc);
     self.symbols.deinit(alloc);
     self.extras.deinit(alloc);
@@ -315,20 +330,49 @@ pub fn deinit(
     self.function_context.deinit(alloc);
 }
 
-fn nodes(
+pub fn printErrors(
+    self: *const @This(),
+) void {
+    for (self.errors.items) |err| {
+        const diag = Diagnostic{
+            .kind = .err,
+            .msg = err,
+            .src = .fromSpan(err.span, self.source()),
+        };
+        std.debug.print("{f}\n", .{diag});
+    }
+}
+
+pub fn pushError(
     self: *@This(),
+    alloc: std.mem.Allocator,
+    span: Span,
+    comptime fmt: []const u8,
+    args: anytype,
+) error{ OutOfMemory, InvalidSemantic } {
+    @branchHint(.cold);
+    const message = try std.fmt.allocPrint(alloc, fmt, args);
+    try self.errors.append(alloc, .{
+        .message = message,
+        .span = span,
+    });
+    return error.InvalidSemantic;
+}
+
+fn nodes(
+    self: *const @This(),
 ) []const Node {
     return self.parser.nodes.items;
 }
 
 fn spans(
-    self: *@This(),
+    self: *const @This(),
 ) []const Span {
     return self.parser.node_spans.items;
 }
 
 fn source(
-    self: *@This(),
+    self: *const @This(),
 ) []const u8 {
     return self.parser.tokenizer.source;
 }
@@ -412,7 +456,12 @@ pub fn run(
     );
 
     self.main = self.symbols.findVar("main") orelse {
-        return error.MainFunctionMissing;
+        return self.pushError(
+            alloc,
+            .{},
+            "no main function",
+            .{},
+        );
     };
     _ = try self.pushInstr(
         alloc,
@@ -421,7 +470,7 @@ pub fn run(
             .argc = 0,
             .argv = @enumFromInt(0),
         } },
-        self.spans()[0],
+        .{},
     );
 }
 
@@ -854,9 +903,6 @@ pub fn convertIf(
     );
     const on_false_block_end = self.nextInstr();
 
-    std.debug.print("conditional at {f}\n", .{conditional});
-    std.debug.print("conditional block at {f}\n", .{if_block});
-
     self.instrs.set(@intFromEnum(conditional), .{ .conditional = .{
         .boolean = boolean,
         .on_true_block_end = on_true_block_end,
@@ -1164,7 +1210,12 @@ pub fn convertReturn(
         Value.void;
 
     const func = self.function_context.getLastOrNull() orelse {
-        return error.NotInFunction;
+        return self.pushError(
+            alloc,
+            self.spans()[node_id],
+            "cannot return outside of a function",
+            .{},
+        );
     };
     _ = try self.pushInstr(
         alloc,
@@ -1194,7 +1245,12 @@ pub fn convertBreak(
         Value.void;
 
     const block = self.break_context.getLastOrNull() orelse {
-        return error.NotInLoop;
+        return self.pushError(
+            alloc,
+            self.spans()[node_id],
+            "cannot continue outside of a loop",
+            .{},
+        );
     };
     _ = try self.pushInstr(
         alloc,
@@ -1216,7 +1272,12 @@ pub fn convertContinue(
     // const cont = self.nodes()[node_id].@"continue";
 
     const block = self.continue_context.getLastOrNull() orelse {
-        return error.NotInLoop;
+        return self.pushError(
+            alloc,
+            self.spans()[node_id],
+            "cannot continue outside of a loop",
+            .{},
+        );
     };
     _ = try self.pushInstr(
         alloc,
@@ -1449,7 +1510,7 @@ pub fn convertAccess(
     node_id: NodeId,
 ) Error!Value {
     const var_name = self.nodes()[node_id].access.ident.read(self.source());
-    _ = alloc;
+
     // if (std.mem.eql(u8, "_", var_name)) {
     //     const result = self.registers.pushTmp();
     //     //
@@ -1491,8 +1552,12 @@ pub fn convertAccess(
     }
 
     const result = self.symbols.findVar(var_name) orelse {
-        log.debug("variable not found: {s}", .{var_name});
-        return Error.VariableNotFound;
+        return self.pushError(
+            alloc,
+            self.spans()[node_id],
+            "variable not found",
+            .{},
+        );
     };
     return result;
 }

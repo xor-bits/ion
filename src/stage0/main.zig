@@ -58,7 +58,13 @@ pub fn main() !u8 {
 
     var ir_gen: IrGenerator = .{ .parser = &parser };
     defer ir_gen.deinit(alloc);
-    try ir_gen.run(alloc);
+    ir_gen.run(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            ir_gen.printErrors();
+            return 3;
+        },
+    };
 
     ir_gen.dump();
 
