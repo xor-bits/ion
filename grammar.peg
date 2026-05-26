@@ -1,6 +1,7 @@
 file <- struct_contents EOF
 
-struct_contents <- (decl SEMI? / field COMMA?)*
+struct_contents <- (decl SEMI)*
+# struct_contents <- (decl SEMI / field COMMA)*
 
 field <- IDENT (COLON expr)? (SINGLE_EQ expr)?
 decl <- LET MUT? IDENT (COLON expr)? SINGLE_EQ expr
@@ -13,7 +14,7 @@ sum <- prod (PLUS / MINUS prod)*
 prod <- factor (ASTERISK / SLASH factor)*
 factor <- (PLUS / MINUS / EXCLAM)* chain
 chain <- atom (call / field_acc / index_acc)*
-call <- LPAREN (expr COMMA?)* RPAREN
+call <- LPAREN (expr COMMA)* expr? RPAREN
 field_acc <- SINGLE_DOT IDENT / ASTERISK
 index_acc <- LBRACKET expr RPRACKET
 atom <- STR_LIT
@@ -30,9 +31,9 @@ atom <- STR_LIT
 	/ slice
 	/ pointer
 	/ address
-scope <- LBRACE (stmt SEMI?)* RBRACE
+scope <- LBRACE (stmt SEMI)* stmt? RBRACE
 stmt <- expr (SINGLE_EQ expr)? / decl
-proto <- EXTERN? FN LPAREN (IDENT COLON expr COMMA?)* RPAREN
+proto <- EXTERN? FN LPAREN (IDENT COLON expr COMMA)* (IDENT COLON expr)? RPAREN
 fn <- proto scope / AT STR_LIT
 if <- IF expr scope (ELSE IF expr scope)* (ELSE scope)?
 loop <- LOOP scope

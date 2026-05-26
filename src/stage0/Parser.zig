@@ -476,9 +476,7 @@ fn parseStructContents(
             .rbrace, .eof => break,
             else => return error.InvalidSyntax,
         }
-        if (self.popIfEql(.semi)) |semi| {
-            span = span.merge(semi.span);
-        }
+        span = span.merge(try self.parseToken(.semi));
     }
 
     return .{
@@ -1294,7 +1292,7 @@ fn parseParams(
         switch (self.peekToken()) {
             .rparen => break,
             .comma => self.advance(),
-            else => {},
+            else => return error.InvalidSyntax,
         }
     }
     const rparen = try self.parseToken(.rparen);
@@ -1406,13 +1404,9 @@ fn parseScope(
 
     const lbrace = try self.parseToken(.lbrace);
     while (true) {
-        self.expectOneOf(&[_]Token{ .rbrace, .semi });
+        self.expectOneOf(&[_]Token{.rbrace});
         switch (self.peekToken()) {
             .rbrace => break,
-            .semi => {
-                self.advance();
-                continue;
-            },
             else => {},
         }
 
@@ -1420,13 +1414,14 @@ fn parseScope(
         try stmt_nodes.append(alloc, stmt.node);
         try stmt_spans.append(alloc, stmt.span);
 
-        self.expectOneOf(&[_]Token{.rbrace});
+        self.expectOneOf(&[_]Token{ .rbrace, .semi });
         switch (self.peekToken()) {
             .rbrace => {
                 has_trailing_semi = false;
                 break;
             },
-            else => {},
+            .semi => self.advance(),
+            else => return error.InvalidSyntax,
         }
     }
     const rbrace = try self.parseToken(.rbrace);
