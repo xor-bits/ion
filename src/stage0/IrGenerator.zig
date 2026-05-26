@@ -720,7 +720,7 @@ pub fn convertExpr(
     node_id: NodeId,
 ) Error!Value {
     switch (self.nodes()[node_id]) {
-        .comptime_print => return try self.convertComptimePrint(
+        .print => return try self.convertComptimePrint(
             alloc,
             name_hint,
             node_id,
@@ -847,7 +847,7 @@ pub fn convertComptimePrint(
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!Value {
-    const comptime_print = self.nodes()[node_id].comptime_print;
+    const comptime_print = self.nodes()[node_id].print;
     const val = try self.convertExpr(
         alloc,
         name_hint,

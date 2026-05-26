@@ -34,7 +34,7 @@ pub const Node = union(enum) {
         expr: NodeId,
         // semi: Span,
     },
-    comptime_print: struct {
+    print: struct {
         // comptime_print: Span,
         expr: NodeId,
     },
@@ -1459,7 +1459,7 @@ fn parseStmt(
     self.expectOneOf(&[_]Token{.let});
     return switch (self.peekToken()) {
         .let => try self.parseDecl(alloc),
-        .comptime_print => try self.parseComptimePrint(alloc),
+        .print => try self.parseComptimePrint(alloc),
         .@"return" => try self.parseReturn(alloc),
         .@"break" => try self.parseBreak(alloc),
         .@"continue" => try self.parseContinue(alloc),
@@ -1471,11 +1471,11 @@ fn parseComptimePrint(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) !SpannedNode {
-    const comptime_print = try self.parseToken(.comptime_print);
+    const comptime_print = try self.parseToken(.print);
     const expr = try self.parseExpr(alloc);
     return .{
         .span = comptime_print.merge(expr.span),
-        .node = .{ .comptime_print = .{
+        .node = .{ .print = .{
             .expr = try self.allocNode(alloc, expr),
         } },
     };
@@ -1609,7 +1609,7 @@ fn print(
             });
             self.print(v.expr, depth + 1);
         },
-        .comptime_print => |v| {
+        .print => |v| {
             std.debug.print("comptime_print:\n", .{});
             self.print(v.expr, depth + 1);
         },

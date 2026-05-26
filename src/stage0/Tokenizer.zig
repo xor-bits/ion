@@ -14,7 +14,7 @@ pub const Token = enum {
     @"return",
     @"break",
     @"continue",
-    comptime_print,
+    print,
 
     semi,
     colon,
@@ -126,7 +126,7 @@ const Keyword = enum {
     @"return",
     @"break",
     @"continue",
-    comptime_print,
+    print,
 };
 
 pub const Span = Range(u32, 0);

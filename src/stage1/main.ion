@@ -20,22 +20,18 @@ let func = fn(b: bool): u32 {
 };
 
 let main = fn() {
-    comptime_print("hello world");
-    comptime_print(func(false));
+    print("hello world");
+    print(func(false));
     
-    // let T = u32;
-    // let mut arr: [4]T = undefined;
-    // arr[0] = 4;
-    // printi(arr[0]);
-
     let v = {
         let x = 5;
         x + x
     };
-    comptime_print(v);
+    print(v);
 
     // uncomment the next line for a syntax error:
     // $
+    // uncomment the next line for an ir-gen error:
     // let error = unknown;
     // uncomment one of the next 3 lines for a type error:
     // let n: u32 = "hello";
@@ -43,46 +39,19 @@ let main = fn() {
     // let n: []u8 = func(true);
     // func(1, 2);
 
-    // let range = 4..5;
-    // let slice: []T = &arr;
-    // let elem: *mut T = &arr[0];
-    // elem.* = 5;
-    // printi(arr[0]);
-
-    // let ptr = malloc(1);
-    // ptr.* = 6;
-    // printi(ptr.*);
-
-    // // slice[0] = 5
-
-    // "hello";
-    
-    //     let a = 5;
-    //     let b =  6;
-    //         print("hello"); nothing(a + b + global);
-
-    // let printf = extern fn(s: *u8, ..): c_int @ "printf";
-    // srand();
-    // let num = rand();
-    // printf("arr[0]: %lu\n\x00".ptr, arr[0]);
-    // printf("num: %lu\n\x00".ptr, num);
-    comptime_print("fib:");
+    print("fib:");
     let mut a = 0 as u64;
     let mut b = 1 as u64;
     loop {
-        comptime_print(a);
-        // printf("%u\n\x00".ptr, a);
+        print(a);
         let tmp = a + b;
         a = b;
         b = tmp;
-        // comptime_sleep(1);
-        // sleep(1);
 
         if a >= 100000 as u64 {
-            // comptime_print("done");
             break;
-        } else {
-            // comptime_print("continue");
         };
+        // print("continue");
     };
+    // print("done");
 };
