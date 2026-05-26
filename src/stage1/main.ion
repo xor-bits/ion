@@ -42,6 +42,14 @@
 //     malloc(bytes)
 // };
 
+let func = fn(b: bool): u32 {
+    if b {
+        return 4;
+    };
+
+    5
+};
+
 let main = fn() {
     // let T = u32;
     // let mut arr: [4]T = undefined;
@@ -90,6 +98,13 @@ let main = fn() {
         b = tmp;
         // comptime_sleep(1);
         // sleep(1);
+
+        if a >= 100000 as u64 {
+            // comptime_print("done");
+            break;
+        } else {
+            // comptime_print("continue");
+        };
     };
     // print("done");
     // let c = 4;

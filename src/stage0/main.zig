@@ -66,7 +66,7 @@ pub fn main() !u8 {
     defer vm.deinit(alloc);
     try vm.run(alloc);
 
-    vm.dump();
+    // vm.dump();
 
     // var sema: Sema = .{ .ir_gen = &ir_gen };
     // defer sema.deinit(alloc);

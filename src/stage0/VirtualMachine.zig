@@ -37,6 +37,13 @@ pub const Register = struct {
         return self.val.type;
     }
 
+    fn asBool(
+        self: @This(),
+    ) error{TypeMismatch}!bool {
+        if (self.type != .bool) return error.TypeMismatch;
+        return self.val.bool;
+    }
+
     fn ty(
         type_id: Type.Id,
     ) @This() {
@@ -64,9 +71,15 @@ pub const Register = struct {
     fn intLit(
         i: u64,
     ) @This() {
-        return .{ .type = ._isize, .val = .{
-            .i64 = @bitCast(i),
-        } };
+        switch (Type.Id._isize) {
+            .i64 => return .{ .type = ._isize, .val = .{
+                .i64 = @bitCast(i),
+            } },
+            .i32 => return .{ .type = ._isize, .val = .{
+                .i32 = @bitCast(i),
+            } },
+            else => comptime @compileError("unsupported host arch"),
+        }
     }
 
     fn floatLit(
@@ -218,7 +231,7 @@ pub const Type = union(enum) {
         _,
 
         const _usize: Type.Id = baseU(usize);
-        const _isize: Type.Id = baseU(isize);
+        const _isize: Type.Id = baseI(isize);
         const _c_int: Type.Id = baseU(c_int);
         const _c_char: Type.Id = baseU(c_char);
         const _c_long: Type.Id = baseU(c_long);
@@ -373,6 +386,8 @@ pub const PrimitiveValue = union(enum) {
     pointer: Pointer,
     slice: Slice,
     func: Function,
+    // TODO: will be a proper pointer later
+    string: []const u8,
 };
 
 pub const Pointer = extern struct {
@@ -527,6 +542,7 @@ pub fn run(
         .child = .u8,
     } }, .slice_u8);
 
+    std.debug.print("VM START\n", .{});
     while (true) {
         self.runOnce(
             alloc,
@@ -543,6 +559,7 @@ pub fn run(
 pub fn dump(
     self: *const @This(),
 ) void {
+    std.debug.print("VM DUMP:\n", .{});
     const frame = self.topFrameConst();
     var it = frame.registers.iterator();
     while (it.next()) |reg| {
@@ -560,8 +577,6 @@ fn runOnce(
     extras: []const u32,
     source: []const u8,
 ) Error!void {
-    _ = source;
-
     const frame = self.topFrame();
 
     const instr_now = frame.instr;
@@ -571,9 +586,20 @@ fn runOnce(
     };
     frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
 
-    // std.debug.print("exec {t}\n", .{opcode});
+    errdefer std.debug.print("error at {f} ({t})\n", .{
+        instr_now,
+        opcode,
+    });
     switch (opcode) {
-        // .str_lit => {},
+        .str_lit => |v| {
+            const str = v.value.read(source);
+            try set(
+                alloc,
+                frame,
+                instr_now,
+                Register{ .type = .slice_u8, .val = .{ .string = str } },
+            );
+        },
         .int_lit => |v| {
             try set(
                 alloc,
@@ -782,13 +808,28 @@ fn runOnce(
                 .func => |p| {
                     std.debug.print("{f}\n", .{p.entry});
                 },
+                .string => |s| {
+                    std.debug.print("{s}\n", .{s});
+                },
             }
         },
-        .block => {
+        .block => |v| {
             const block_frame = try self.pushFrame(alloc, frame.instr);
             block_frame.return_register = instr_now;
+            frame.instr = v.block_end;
         },
-        // .conditional => {},
+        .conditional => |v| {
+            const takes_on_true_branch = try get(frame, v.boolean);
+
+            if (try takes_on_true_branch.asBool()) {
+                const block_frame = try self.pushFrame(alloc, frame.instr);
+                block_frame.return_register = instr_now;
+            } else {
+                const block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                block_frame.return_register = instr_now;
+            }
+            frame.instr = v.on_false_block_end;
+        },
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
     }
 }
@@ -1099,6 +1140,7 @@ fn cast(
         },
         else => return error.OperationUnsupportedForType,
     }
+    val.type = as;
     return val;
 }
 

@@ -280,8 +280,13 @@ pub const Error = error{
     OutOfMemory,
     VariableNotFound,
     MainFunctionMissing,
+    NotInFunction,
+    NotInLoop,
 };
 
+function_context: std.ArrayList(Instr.Id) = .empty,
+break_context: std.ArrayList(Instr.Id) = .empty,
+continue_context: std.ArrayList(Instr.Id) = .empty,
 instrs: std.MultiArrayList(Instr) = .{},
 extras: std.ArrayList(u32) = .{},
 symbols: Symbols = .{},
@@ -303,6 +308,9 @@ pub fn deinit(
     self.symbols.deinit(alloc);
     self.extras.deinit(alloc);
     self.instrs.deinit(alloc);
+    self.continue_context.deinit(alloc);
+    self.break_context.deinit(alloc);
+    self.function_context.deinit(alloc);
 }
 
 fn nodes(
@@ -400,6 +408,7 @@ pub fn run(
 pub fn dump(
     self: *@This(),
 ) void {
+    std.debug.print("IR GENERATOR DUMP:\n", .{});
     self.dumpBlock(@enumFromInt(0), 0);
     std.debug.print(";; instr extra = {}\n", .{self.extras.items.len});
     std.debug.print(";; instr count = {}\n", .{self.instrs.len});
@@ -634,6 +643,11 @@ pub fn convertExpr(
             name_hint,
             node_id,
         ),
+        .assign => return try self.convertAssign(
+            alloc,
+            name_hint,
+            node_id,
+        ),
         .scope => return try self.convertScope(
             alloc,
             name_hint,
@@ -699,7 +713,7 @@ pub fn convertAssign(
     alloc: std.mem.Allocator,
     name_hint: *const NameHint,
     node_id: NodeId,
-) Error!void {
+) Error!Value {
     const assign = self.nodes()[node_id].assign;
 
     const target = try self.convertExpr(
@@ -718,6 +732,7 @@ pub fn convertAssign(
         .target = target,
         .val = val,
     } });
+    return Value.void;
 }
 
 pub fn convertComptimePrint(
@@ -760,31 +775,32 @@ pub fn convertIf(
 
     const conditional = try self.pushInstr(alloc, .{ .conditional = undefined });
 
+    const on_true_entry = self.nextInstr();
     const on_true_val = try self.convertScope(
         alloc,
         &name_hint_on_true,
         @"if".on_true_scope,
     );
     _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = if_block,
+        .block = on_true_entry,
         .val = on_true_val,
     } });
-    const on_true_block_end = self.nextInstr();
 
+    const on_false_entry = self.nextInstr();
     const on_false_val = try self.convertScope(
         alloc,
         &name_hint_on_false,
         @"if".on_false_scope,
     );
     _ = try self.pushInstr(alloc, .{ .@"break" = .{
-        .block = if_block,
+        .block = on_false_entry,
         .val = on_false_val,
     } });
     const on_false_block_end = self.nextInstr();
 
     self.instrs.set(@intFromEnum(conditional), .{ .conditional = .{
         .boolean = boolean,
-        .on_true_block_end = on_true_block_end,
+        .on_true_block_end = on_false_entry,
         .on_false_block_end = on_false_block_end,
     } });
     self.instrs.set(@intFromEnum(if_block), .{ .block = .{
@@ -901,6 +917,12 @@ pub fn convertFn(
             );
         }
 
+        try self.function_context.append(
+            alloc,
+            func_block_start,
+        );
+        defer _ = self.function_context.pop();
+
         const return_value = try self.convertScope(
             alloc,
             &name_hint_fn,
@@ -930,6 +952,11 @@ pub fn convertLoop(
 
     const loop_block = try self.pushInstr(alloc, .{ .block = undefined });
     const loop_entry = self.nextInstr();
+
+    try self.break_context.append(alloc, loop_entry);
+    defer _ = self.break_context.pop();
+    try self.continue_context.append(alloc, loop_entry);
+    defer _ = self.break_context.pop();
 
     // TODO: give a warning when the loop scope tries to break a
     // value implicitly, because loops have an implicit continue
@@ -1003,7 +1030,17 @@ pub fn convertStmt(
             name_hint,
             node_id,
         ),
-        .assign => try self.convertAssign(
+        .@"return" => try self.convertReturn(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .@"break" => try self.convertBreak(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .@"continue" => try self.convertContinue(
             alloc,
             name_hint,
             node_id,
@@ -1014,6 +1051,76 @@ pub fn convertStmt(
             node_id,
         ),
     }
+}
+
+pub fn convertReturn(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const ret = self.nodes()[node_id].@"return";
+
+    const ret_val = if (ret.value) |val|
+        try self.convertExpr(
+            alloc,
+            name_hint,
+            val,
+        )
+    else
+        Value.void;
+
+    const func = self.function_context.getLastOrNull() orelse {
+        return error.NotInFunction;
+    };
+    _ = try self.pushInstr(alloc, .{ .@"break" = .{
+        .block = func,
+        .val = ret_val,
+    } });
+}
+
+pub fn convertBreak(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    const br = self.nodes()[node_id].@"break";
+
+    const br_val = if (br.value) |val|
+        try self.convertExpr(
+            alloc,
+            name_hint,
+            val,
+        )
+    else
+        Value.void;
+
+    const block = self.break_context.getLastOrNull() orelse {
+        return error.NotInLoop;
+    };
+    _ = try self.pushInstr(alloc, .{ .@"break" = .{
+        .block = block,
+        .val = br_val,
+    } });
+}
+
+pub fn convertContinue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!void {
+    _ = name_hint;
+    _ = node_id;
+    // const cont = self.nodes()[node_id].@"continue";
+
+    const block = self.continue_context.getLastOrNull() orelse {
+        return error.NotInLoop;
+    };
+    _ = try self.pushInstr(alloc, .{ .@"continue" = .{
+        .block = block,
+    } });
 }
 
 pub fn convertArray(

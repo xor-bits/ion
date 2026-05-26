@@ -1,7 +1,7 @@
 file <- struct_contents EOF
 
 struct_contents <- (decl SEMI)*
-# struct_contents <- (decl SEMI / field COMMA)*
+# struct_contents <- ((decl SEMI) / (field COMMA))*
 
 field <- IDENT (COLON expr)? (SINGLE_EQ expr)?
 decl <- LET MUT? IDENT (COLON expr)? SINGLE_EQ expr
@@ -11,7 +11,7 @@ comparison <- cast (DOUBLE_EQ / NEQ / LT / LE / GT / GE cast)*
 cast <- range (AS range)*
 range <- sum (DOUBLE_DOT sum)*
 sum <- prod (PLUS / MINUS prod)*
-prod <- factor (ASTERISK / SLASH factor)*
+prod <- factor ((ASTERISK / SLASH) factor)*
 factor <- (PLUS / MINUS / EXCLAM)* chain
 chain <- atom (call / field_acc / index_acc)*
 call <- LPAREN (expr COMMA)* expr? RPAREN
@@ -22,7 +22,7 @@ atom <- STR_LIT
 	/ FLOAT_LIT
 	/ INT_LIT
 	/ IDENT
-	/ LPAREN expr RPAREN
+	/ (LPAREN expr RPAREN)
 	/ scope
 	/ fn
 	/ proto
@@ -32,9 +32,15 @@ atom <- STR_LIT
 	/ pointer
 	/ address
 scope <- LBRACE (stmt SEMI)* stmt? RBRACE
-stmt <- expr (SINGLE_EQ expr)? / decl
+stmt <- expr
+	/ (expr (SINGLE_EQ expr)?)
+	/ decl
+	/ (COMPTIME_PRINT expr)
+	/ (RETURN expr?)
+	/ (BREAK expr?)
+	/ (CONTINUE expr?)
 proto <- EXTERN? FN LPAREN (IDENT COLON expr COMMA)* (IDENT COLON expr)? RPAREN
-fn <- proto scope / AT STR_LIT
+fn <- proto (scope / AT STR_LIT)
 if <- IF expr scope (ELSE IF expr scope)* (ELSE scope)?
 loop <- LOOP scope
 slice <- LBRACKET expr? RBRACKET expr
@@ -46,43 +52,47 @@ keyword <- let / mut / fn / extern / as / if / else / for / loop
 skip <- (\s / '//' [^\n]* [\n] / '/*' ([*][^/]|[^*])* '*/')*
 
 # tokens
-LET        <- 'let'    skip
-MUT        <- 'mut'    skip
-FN         <- 'fn'     skip
-EXTERN     <- 'extern' skip
-AS         <- 'as'     skip
-IF         <- 'if'     skip
-ELSE       <- 'else'   skip
-FOR        <- 'for'    skip
-LOOP       <- 'loop'   skip
-SEMI       <- ';'      skip
-COLON      <- ':'      skip
-COMMA      <- ','      skip
-SINGLE_DOT <- '.' ![.] skip
-DOUBLE_DOT <- '..'     skip
-LPAREN     <- '('      skip
-RPAREN     <- ')'      skip
-LBRACE     <- '{'      skip
-RBRACE     <- '}'      skip
-LBRACKET   <- '['      skip
-RBRACKET   <- ']'      skip
-SINGLE_EQ  <- '=' ![=] skip
-DOUBLE_EQ  <- '=='     skip
-NEQ        <- '!='     skip
-LT         <- '<' ![=] skip
-LE         <- '<='     skip
-GT         <- '>' ![=] skip
-GE         <- '>='     skip
-AMPERSAND  <- '&'      skip
-AT         <- '@'      skip
-EXCLAM     <- '!'      skip
-PLUS       <- '+'      skip
-MINUS      <- '-'      skip
-ASTERISK   <- '*'      skip
-SLASH      <- '/'      skip
-PERCENT    <- '%'      skip
-IDENT      <- !keyword [a-zA-Z_] [a-zA-Z0-9_]* skip
-STR_LIT    <- ["] [^"]* ["] skip
-CHAR_LIT   <- ['] [^'] [']  skip
-INT_LIT    <- \d+           skip
-FLOAT_LIT  <- \d+\.\d+      skip
+LET            <- 'let'            skip
+MUT            <- 'mut'            skip
+FN             <- 'fn'             skip
+EXTERN         <- 'extern'         skip
+AS             <- 'as'             skip
+IF             <- 'if'             skip
+ELSE           <- 'else'           skip
+FOR            <- 'for'            skip
+LOOP           <- 'loop'           skip
+COMPTIME_PRINT <- 'comptime_print' skip
+RETURN         <- 'return'         skip
+BREAK          <- 'break'          skip
+CONTINUE       <- 'continue'       skip
+SEMI           <- ';'              skip
+COLON          <- ':'              skip
+COMMA          <- ','              skip
+SINGLE_DOT     <- '.' ![.]         skip
+DOUBLE_DOT     <- '..'             skip
+LPAREN         <- '('              skip
+RPAREN         <- ')'              skip
+LBRACE         <- '{'              skip
+RBRACE         <- '}'              skip
+LBRACKET       <- '['              skip
+RBRACKET       <- ']'              skip
+SINGLE_EQ      <- '=' ![=]         skip
+DOUBLE_EQ      <- '=='             skip
+NEQ            <- '!='             skip
+LT             <- '<' ![=]         skip
+LE             <- '<='             skip
+GT             <- '>' ![=]         skip
+GE             <- '>='             skip
+AMPERSAND      <- '&'              skip
+AT             <- '@'              skip
+EXCLAM         <- '!'              skip
+PLUS           <- '+'              skip
+MINUS          <- '-'              skip
+ASTERISK       <- '*'              skip
+SLASH          <- '/'              skip
+PERCENT        <- '%'              skip
+IDENT          <- !keyword [a-zA-Z_] [a-zA-Z0-9_]* skip
+STR_LIT        <- ["] [^"]* ["]    skip
+CHAR_LIT       <- ['] [^'] [']     skip
+INT_LIT        <- \d+              skip
+FLOAT_LIT      <- \d+\.\d+         skip

@@ -11,6 +11,9 @@ pub const Token = enum {
     @"else",
     @"for",
     loop,
+    @"return",
+    @"break",
+    @"continue",
     comptime_print,
 
     semi,
@@ -120,6 +123,9 @@ const Keyword = enum {
     @"else",
     @"for",
     loop,
+    @"return",
+    @"break",
+    @"continue",
     comptime_print,
 };
 

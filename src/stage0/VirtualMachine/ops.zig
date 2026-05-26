@@ -148,15 +148,15 @@ pub fn not(val: Register) Error!Register {
     } };
 }
 
-    // neg,
-    // not,
-    // slice,
-    // slice_mut,
-    // pointer,
-    // pointer_mut,
-    // address,
-    // address_mut,
-    // deref,
+// neg,
+// not,
+// slice,
+// slice_mut,
+// pointer,
+// pointer_mut,
+// address,
+// address_mut,
+// deref,
 
 pub fn slice(val: Register) Error!Register {
     if (val.val != .bool) return Error.OperationUnsupportedForType;
@@ -210,7 +210,7 @@ fn boolOp(
     return switch (std.meta.activeTag(lhs.val)) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |v| {
             const t = @tagName(v);
-            return .{ .type = lhs.type, .val = .{ .bool = func(
+            return .{ .type = .bool, .val = .{ .bool = func(
                 @field(lhs.val, t),
                 @field(rhs.val, t),
             ) } };

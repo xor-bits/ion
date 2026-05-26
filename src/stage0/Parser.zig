@@ -54,6 +54,18 @@ pub const Node = union(enum) {
         // @"loop": Span,
         scope: NodeId,
     },
+    @"return": struct {
+        // @"return": Span,
+        value: ?NodeId,
+    },
+    @"break": struct {
+        // @"break": Span,
+        value: ?NodeId,
+    },
+    @"continue": struct {
+        // @"continue": Span,
+        // value: ?NodeId,
+    },
     assign: struct {
         lhs: NodeId,
         // eq: Span,
@@ -1448,6 +1460,9 @@ fn parseStmt(
     return switch (self.peekToken()) {
         .let => try self.parseDecl(alloc),
         .comptime_print => try self.parseComptimePrint(alloc),
+        .@"return" => try self.parseReturn(alloc),
+        .@"break" => try self.parseBreak(alloc),
+        .@"continue" => try self.parseContinue(alloc),
         else => try self.parseStmtExpr(alloc),
     };
 }
@@ -1463,6 +1478,58 @@ fn parseComptimePrint(
         .node = .{ .comptime_print = .{
             .expr = try self.allocNode(alloc, expr),
         } },
+    };
+}
+
+fn parseReturn(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !SpannedNode {
+    const return_kw = try self.parseToken(.@"return");
+    var span = return_kw;
+
+    self.expectOneOf(&[_]Token{.semi});
+    const value = if (self.peekToken() != .semi) b: {
+        const expr = try self.parseExpr(alloc);
+        span = span.merge(expr.span);
+        break :b try self.allocNode(alloc, expr);
+    } else null;
+
+    return .{
+        .span = span,
+        .node = .{ .@"return" = .{ .value = value } },
+    };
+}
+
+fn parseBreak(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !SpannedNode {
+    const break_kw = try self.parseToken(.@"break");
+    var span = break_kw;
+
+    self.expectOneOf(&[_]Token{.semi});
+    const value = if (self.peekToken() != .semi) b: {
+        const expr = try self.parseExpr(alloc);
+        span = span.merge(expr.span);
+        break :b try self.allocNode(alloc, expr);
+    } else null;
+
+    return .{
+        .span = span,
+        .node = .{ .@"break" = .{ .value = value } },
+    };
+}
+
+fn parseContinue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) !SpannedNode {
+    _ = alloc;
+    const continue_kw = try self.parseToken(.@"continue");
+    return .{
+        .span = continue_kw,
+        .node = .{ .@"continue" = .{} },
     };
 }
 
@@ -1561,6 +1628,21 @@ fn print(
         .loop => |v| {
             std.debug.print("loop scope:\n", .{});
             self.print(v.scope, depth + 1);
+        },
+        .@"return" => |v| {
+            std.debug.print("return:\n", .{});
+            if (v.value) |val| {
+                self.print(val, depth + 1);
+            }
+        },
+        .@"break" => |v| {
+            std.debug.print("break:\n", .{});
+            if (v.value) |val| {
+                self.print(val, depth + 1);
+            }
+        },
+        .@"continue" => {
+            std.debug.print("continue\n", .{});
         },
         .assign => |v| {
             std.debug.print("assign:\n", .{});
