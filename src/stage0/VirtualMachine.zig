@@ -615,8 +615,8 @@ fn runOnce(
             const ip = func_reg.val.func.entry;
 
             const call_frame = try self.pushFrame(alloc, ip);
-            call_frame.return_register = instr_now;
             call_frame.symbol = func_reg.name;
+            frame.return_register = instr_now;
             // std.debug.print("{s}\n", .{func_reg.name.read(source)});
 
             const args = IrGenerator.Extra.getParams(
@@ -753,17 +753,18 @@ fn runOnce(
         },
         .@"break" => |v| {
             const break_val = try get(frame, v.val);
-            const result = frame.return_register;
 
             while (self.topFrame().block != v.block) {
                 self.popFrame();
             }
             self.popFrame();
 
+            const new_top_frame = self.topFrame();
             try set(
                 alloc,
-                self.topFrame(),
-                result,
+                config.verbose,
+                new_top_frame,
+                new_top_frame.return_register,
                 break_val,
             );
         },
