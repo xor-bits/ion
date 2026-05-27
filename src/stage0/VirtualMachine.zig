@@ -759,7 +759,7 @@ fn runOnce(
                     v.op,
                 });
             }
-            const dst: Register = try switch (v.op) {
+            const dst: Register = switch (v.op) {
                 .slice => Register.ty(try self.resolveType(alloc, instr_now, .{ .slice = .{
                     .mut = false,
                     .child = try self.regAsType(alloc, instr_now, val),
@@ -782,7 +782,16 @@ fn runOnce(
                 .deref => {
                     @panic("todo");
                 },
-                inline else => |op| @field(ops, @tagName(op))(val),
+                inline else => |op| b: {
+                    break :b @field(ops, @tagName(op))(val) catch {
+                        return self.pushError(
+                            alloc,
+                            self.span(instr_now),
+                            "unary op '{f}' not supported for '{f}'",
+                            .{ op, val.type.print(self) },
+                        );
+                    };
+                },
             };
             try set(
                 alloc,
@@ -816,14 +825,23 @@ fn runOnce(
                     v.op,
                 });
             }
-            const dst: Register = try switch (v.op) {
+            const dst: Register = switch (v.op) {
                 .as => try self.cast(
                     alloc,
                     instr_now,
                     lhs,
                     try self.regAsType(alloc, instr_now, rhs),
                 ),
-                inline else => |op| @field(ops, @tagName(op))(lhs, rhs),
+                inline else => |op| b: {
+                    break :b @field(ops, @tagName(op))(lhs, rhs) catch {
+                        return self.pushError(
+                            alloc,
+                            self.span(instr_now),
+                            "binary op '{f}' not supported for '{f}' and '{f}'",
+                            .{ op, lhs.type.print(self), rhs.type.print(self) },
+                        );
+                    };
+                },
             };
             try set(
                 alloc,
