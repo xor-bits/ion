@@ -21,7 +21,7 @@ let main = fn() {
 
 ## Usage
 
-0.15.x Zig compiler is required
+0.16.x Zig compiler is required
 
 ```bash
 # build the transpiler

@@ -188,7 +188,10 @@ pub const BinaryOp = enum {
     index,
     range,
 
-    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+    pub fn format(
+        self: *const @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .add => "+",
             .sub => "-",
@@ -222,7 +225,10 @@ pub const UnaryOp = enum {
     address_mut,
     deref,
 
-    pub fn format(self: *const @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+    pub fn format(
+        self: *const @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         return writer.print("{s}", .{switch (self.*) {
             .neg => "-",
             .not => "!",
@@ -279,10 +285,10 @@ const EnumSetFmt = struct {
     }
 };
 
-nodes: std.ArrayList(Node) = .{},
-node_spans: std.ArrayList(Span) = .{},
-// TODO: node_stack: std.ArrayList(Node) = .{},
-expected: std.EnumSet(Token) = .{},
+nodes: std.ArrayList(Node) = .empty,
+node_spans: std.ArrayList(Span) = .empty,
+// TODO: node_stack: std.ArrayList(Node) = .empty,
+expected: std.EnumSet(Token) = .empty,
 tokenizer: *Tokenizer,
 current: u32 = 0,
 
@@ -458,13 +464,13 @@ fn parseStructContents(
 ) Error!SpannedNode {
     // std.log.debug("parse struct contents", .{});
     // TODO: use a shared stack instead
-    var field_nodes: std.ArrayList(Node) = .{};
+    var field_nodes: std.ArrayList(Node) = .empty;
     defer field_nodes.deinit(alloc);
-    var field_spans: std.ArrayList(Span) = .{};
+    var field_spans: std.ArrayList(Span) = .empty;
     defer field_spans.deinit(alloc);
-    var decl_nodes: std.ArrayList(Node) = .{};
+    var decl_nodes: std.ArrayList(Node) = .empty;
     defer decl_nodes.deinit(alloc);
-    var decl_spans: std.ArrayList(Span) = .{};
+    var decl_spans: std.ArrayList(Span) = .empty;
     defer decl_spans.deinit(alloc);
 
     var span: Span = Span{};
@@ -986,9 +992,9 @@ fn parseArgs(
     alloc: std.mem.Allocator,
 ) Error!struct { NodeRange, Span } {
     // std.log.debug("parse args", .{});
-    var arg_nodes: std.ArrayListUnmanaged(Node) = .{};
+    var arg_nodes: std.ArrayListUnmanaged(Node) = .empty;
     defer arg_nodes.deinit(alloc);
-    var arg_spans: std.ArrayListUnmanaged(Span) = .{};
+    var arg_spans: std.ArrayListUnmanaged(Span) = .empty;
     defer arg_spans.deinit(alloc);
 
     const lparen = try self.parseToken(.lparen);
@@ -1276,9 +1282,9 @@ fn parseParams(
     is_va_args: bool,
 } {
     // std.log.debug("parse params", .{});
-    var param_nodes: std.ArrayListUnmanaged(Node) = .{};
+    var param_nodes: std.ArrayListUnmanaged(Node) = .empty;
     defer param_nodes.deinit(alloc);
-    var param_spans: std.ArrayListUnmanaged(Span) = .{};
+    var param_spans: std.ArrayListUnmanaged(Span) = .empty;
     defer param_spans.deinit(alloc);
 
     var va_args = false;
@@ -1407,9 +1413,9 @@ fn parseScope(
     alloc: std.mem.Allocator,
 ) !SpannedNode {
     // std.log.debug("parse scope", .{});
-    var stmt_nodes: std.ArrayListUnmanaged(Node) = .{};
+    var stmt_nodes: std.ArrayListUnmanaged(Node) = .empty;
     defer stmt_nodes.deinit(alloc);
-    var stmt_spans: std.ArrayListUnmanaged(Span) = .{};
+    var stmt_spans: std.ArrayListUnmanaged(Span) = .empty;
     defer stmt_spans.deinit(alloc);
 
     var has_trailing_semi = true;

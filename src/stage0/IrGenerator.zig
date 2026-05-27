@@ -52,7 +52,10 @@ pub const Value = enum(u32) {
         };
     }
 
-    pub fn format(self: @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         if (self.asIndex()) |instr| {
             try writer.print("{f}", .{instr});
         } else {
@@ -190,11 +193,16 @@ pub const Instr = union(enum) {
         start,
         _,
 
-        pub fn asValue(self: @This()) Value {
+        pub fn asValue(
+            self: @This(),
+        ) Value {
             return @enumFromInt(@intFromEnum(self) + Value.builtin_count);
         }
 
-        pub fn format(self: @This(), writer: *std.io.Writer) std.io.Writer.Error!void {
+        pub fn format(
+            self: @This(),
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
             try writer.print("%{}", .{@intFromEnum(self)});
         }
     };
@@ -1644,14 +1652,14 @@ pub fn convertIntLit(
 }
 
 pub const Symbols = struct {
-    var_name_hashmap: std.StringHashMapUnmanaged(ShadowChainEntry) = .{},
-    shadow_chain: std.ArrayList(ShadowChainEntry) = .{},
-    val_names: std.AutoHashMapUnmanaged(Value, []const u8) = .{},
+    var_name_hashmap: std.StringHashMapUnmanaged(ShadowChainEntry) = .empty,
+    shadow_chain: std.ArrayList(ShadowChainEntry) = .empty,
+    val_names: std.AutoHashMapUnmanaged(Value, []const u8) = .empty,
 
     /// holds the number of values in the value stack at that scopes position
-    scope_sizes: std.ArrayList(u32) = .{},
+    scope_sizes: std.ArrayList(u32) = .empty,
     /// holds all values of all scopes
-    value_stack: std.ArrayList(Value) = .{},
+    value_stack: std.ArrayList(Value) = .empty,
 
     const ShadowChainEntry = struct {
         prev: u32,

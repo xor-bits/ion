@@ -141,32 +141,21 @@ eof: SpannedToken = .{
     .span = .{},
 },
 tokens: std.MultiArrayList(SpannedToken) = .{},
-source: []const u8 = "",
 cursor: u32 = 0,
 
-source_file: std.fs.File,
+source: []const u8,
 
 pub fn deinit(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) void {
     self.tokens.deinit(alloc);
-    alloc.free(self.source);
 }
 
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) !void {
-    var read_buffer: [0x8000]u8 = undefined;
-
-    var source_reader = self.source_file.reader(&read_buffer);
-    const source_size = try source_reader.getSize();
-    const source = try alloc.alloc(u8, source_size);
-    const actual_source_size = try source_reader.read(source);
-    std.debug.assert(actual_source_size == source_size);
-    self.source = source;
-
     try self.tokens.ensureUnusedCapacity(alloc, self.source.len / 2);
 
     while (self.next()) |tok| {

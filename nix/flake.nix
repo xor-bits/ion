@@ -18,8 +18,8 @@
         devShells.default = pkgs.mkShell rec {
           buildInputs = with pkgs; [
             pkg-config
-            zig_0_15
-            zls_0_15
+            zig
+            zls
             llvmPackages_21.llvm
             llvmPackages_21.clang
           ];

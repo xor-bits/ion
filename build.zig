@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
     const stage0_compiler = b.addExecutable(.{
         .name = "ion-stage0",
         .root_module = stage0,
+        .use_llvm = true,
     });
 
     const install_stage0_compiler = b.addInstallArtifact(stage0_compiler, .{});

@@ -7,15 +7,14 @@ const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
 // const Codegen = @import("Codegen.zig");
 
-pub fn main() !u8 {
-    var gpf = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpf.deinit();
-    const alloc = gpf.allocator();
+pub fn main(init: std.process.Init) !u8 {
+    const alloc = init.gpa;
+    const io = init.io;
 
     // const source_root = try std.process.getEnvMap(gpf.allocator());
     // source_root.get("");
 
-    var args = try std.process.argsWithAllocator(alloc);
+    var args = init.minimal.args.iterate();
     defer args.deinit();
 
     _ = args.next().?;
@@ -30,14 +29,20 @@ pub fn main() !u8 {
         return 1;
     };
 
-    const source_file = try std.fs.cwd().openFile(source_path, .{});
-    defer source_file.close();
+    const cwd = std.Io.Dir.cwd();
 
-    const destin_file = try std.fs.cwd().createFile(destin_path, .{});
-    defer destin_file.close();
+    const source_file = try cwd.openFile(io, source_path, .{});
+    defer source_file.close(io);
+
+    const destin_file = try cwd.createFile(io, destin_path, .{});
+    defer destin_file.close(io);
+
+    var source_reader = source_file.reader(io, &.{});
+    const source = try source_reader.interface.allocRemaining(alloc, .limited64(std.math.maxInt(u32)));
+    defer alloc.free(source);
 
     std.debug.print("running lexer\n", .{});
-    var tokenizer: Tokenizer = .{ .source_file = source_file };
+    var tokenizer: Tokenizer = .{ .source = source };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
