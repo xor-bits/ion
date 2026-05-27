@@ -35,7 +35,7 @@ scope <- LBRACE (stmt SEMI)* stmt? RBRACE
 stmt <- expr
 	/ (expr (SINGLE_EQ expr)?)
 	/ decl
-	/ (COMPTIME_PRINT expr)
+	/ (PRINT expr)
 	/ (RETURN expr?)
 	/ (BREAK expr?)
 	/ (CONTINUE expr?)
@@ -61,7 +61,7 @@ IF             <- 'if'             skip
 ELSE           <- 'else'           skip
 FOR            <- 'for'            skip
 LOOP           <- 'loop'           skip
-COMPTIME_PRINT <- 'comptime_print' skip
+PRINT          <- 'print'          skip
 RETURN         <- 'return'         skip
 BREAK          <- 'break'          skip
 CONTINUE       <- 'continue'       skip
