@@ -27,7 +27,7 @@ let main = fn() {
         let x = 5;
         x + x
     };
-    print(v);
+    print v;
 
     // uncomment the next line for a syntax error:
     // $
