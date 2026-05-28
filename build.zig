@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
     const stage0_compiler = b.addExecutable(.{
         .name = "ion-stage0",
         .root_module = stage0,
-        // .use_llvm = true,
+        .use_llvm = b.option(bool, "llvm", "use LLVM to compile"),
     });
 
     const install_stage0_compiler = b.addInstallArtifact(stage0_compiler, .{});
@@ -30,29 +30,27 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "run the compiler");
     run_step.dependOn(&run_stage0_compiler.step);
 
-    _ = stage1_transpiled_src;
+    if (b.option(bool, "dump", "dump stage0 output") == true) {
+        const dump_stage1_transpiled_src = b.addSystemCommand(&.{
+            "cat",
+        });
+        dump_stage1_transpiled_src.addFileArg(stage1_transpiled_src);
+        run_step.dependOn(&dump_stage1_transpiled_src.step);
+    }
 
-    // if (b.option(bool, "dump", "dump stage0 output") == true) {
-    //     const dump_stage1_transpiled_src = b.addSystemCommand(&.{
-    //         "cat",
-    //     });
-    //     dump_stage1_transpiled_src.addFileArg(stage1_transpiled_src);
-    //     run_step.dependOn(&dump_stage1_transpiled_src.step);
-    // }
-
-    // const stage1 = b.createModule(.{
-    //     .root_source_file = stage1_transpiled_src,
-    //     .target = target,
-    //     .optimize = optimize,
-    //     .link_libc = true,
-    // });
+    const stage1 = b.createModule(.{
+        .root_source_file = stage1_transpiled_src,
+        .target = target,
+        .optimize = optimize,
+        // .link_libc = true,
+    });
     // stage1.linkSystemLibrary("LLVM-21", .{});
 
-    // const stage1_compiler = b.addExecutable(.{
-    //     .name = "ion-stage1",
-    //     .root_module = stage1,
-    // });
+    const stage1_compiler = b.addExecutable(.{
+        .name = "ion-stage1",
+        .root_module = stage1,
+    });
 
-    // const run_stage1_compiler = b.addRunArtifact(stage1_compiler);
-    // run_step.dependOn(&run_stage1_compiler.step);
+    const run_stage1_compiler = b.addRunArtifact(stage1_compiler);
+    run_step.dependOn(&run_stage1_compiler.step);
 }

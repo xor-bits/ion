@@ -20,8 +20,8 @@ pub const Variable = struct {
 
         pub fn format(
             self: *const @This(),
-            writer: *std.io.Writer,
-        ) std.io.Writer.Error!void {
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
             if (self.builtin) {
                 try writer.print("{s}", .{self.base_name});
             } else {
@@ -95,13 +95,12 @@ pub const Error = error{
     VariableNotFound,
 };
 
-variable_version_map: std.MultiArrayList(Variable) = .{},
-errors: std.ArrayList(ErrorMsg) = .{},
+variable_version_map: std.MultiArrayList(Variable) = .empty,
+errors: std.ArrayList(ErrorMsg) = .empty,
 depth: u8 = 0,
 scope_id: u32 = 0,
 
 parser: *Parser,
-destin_file: std.fs.File,
 
 pub fn deinit(
     self: *@This(),
@@ -258,11 +257,8 @@ fn indent(
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
+    writer: *std.Io.Writer,
 ) Error!void {
-    var write_buffer: [0x8000]u8 = undefined;
-    var source_writer = self.destin_file.writer(&write_buffer);
-    const writer = &source_writer.interface;
-
     for (std.enums.values(BuiltinVariable)) |builtin| {
         try writer.print("const {0t}_0 = {0t};\n", .{
             builtin,
@@ -270,6 +266,21 @@ pub fn run(
     }
     try writer.print("pub const main = main_0;\n", .{});
     try writer.writeAll(
+        \\pub fn builtin_print(val: anytype) void {
+        \\    if (@TypeOf(val) == BuiltinSliceType(u8) or @TypeOf(val) == BuiltinMutSliceType(u8)) {
+        \\        const ptr: [*]const u8 = @ptrCast(val.ptr);
+        \\        @import("std").debug.print("{s}\n", .{ptr[0..val.len]});
+        \\        return;
+        \\    }
+        \\    switch (@typeInfo(@TypeOf(val))) {
+        \\        .pointer => {
+        \\            @import("std").debug.print("0x{x}\n", .{@intFromPtr(val)});
+        \\        },
+        \\        inline else => {
+        \\            @import("std").debug.print("{any}\n", .{val});
+        \\        },
+        \\    }
+        \\}
         \\pub fn builtin_cast(comptime T: type, val: anytype) T {
         \\    const src = @typeInfo(@TypeOf(val));
         \\    const dst = @typeInfo(T);
@@ -364,7 +375,7 @@ pub fn run(
 pub fn convertStructContents(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -385,7 +396,7 @@ pub fn convertStructContents(
 pub fn convertDecl(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
     mode: enum { local, global },
@@ -440,7 +451,7 @@ pub fn convertDecl(
 pub fn convertExpr(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -535,6 +546,21 @@ pub fn convertExpr(
                     v.lhs,
                 );
                 try writer.print(")", .{});
+            } else if (v.op == .index) {
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.rhs,
+                );
+                try writer.print("[", .{});
+                try self.convertExpr(
+                    alloc,
+                    writer,
+                    name_hint,
+                    v.lhs,
+                );
+                try writer.print("]", .{});
             } else {
                 try self.convertExpr(
                     alloc,
@@ -543,10 +569,10 @@ pub fn convertExpr(
                     v.lhs,
                 );
                 try writer.print("{s}", .{switch (v.op) {
-                    .add => "+%",
-                    .sub => "-%",
-                    .mul => "*%",
-                    .div => "/%",
+                    .add => "+",
+                    .sub => "-",
+                    .mul => "*",
+                    .div => "/",
                     .mod => "%",
                     .eq => "==",
                     .neq => "!=",
@@ -555,7 +581,7 @@ pub fn convertExpr(
                     .gt => ">",
                     .ge => ">=",
                     .field => ".",
-                    .range, .as => unreachable,
+                    .range, .as, .index => unreachable,
                 }});
                 try self.convertExpr(
                     alloc,
@@ -578,6 +604,11 @@ pub fn convertExpr(
                 try writer.print("{s}", .{switch (v.op) {
                     .neg => "~",
                     .not => "!",
+                    .slice => "[]const ",
+                    .slice_mut => "[]",
+                    .pointer => "*const ",
+                    .pointer_mut => "*",
+                    .address, .address_mut => "&",
                     .deref => unreachable,
                 }});
                 try self.convertExpr(
@@ -702,6 +733,10 @@ pub fn convertExpr(
         .struct_contents,
         .field,
         .decl,
+        .print,
+        .@"return",
+        .@"break",
+        .@"continue",
         .param,
         => unreachable,
     }
@@ -712,15 +747,15 @@ pub fn convertExpr(
 pub fn convertScope(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
     const scope = self.nodes()[node_id].scope;
 
     const scope_id = self.scope_id;
-    try writer.print("_{}: {{\n", .{
-        scope_id,
+    try writer.print("_{}: {{ if(false) break :_{};\n", .{
+        scope_id, scope_id,
     });
     self.scope_id += 1;
 
@@ -731,9 +766,12 @@ pub fn convertScope(
         const stmts = _stmts.@"0";
         const last_stmt = _stmts.@"1";
 
+        var reachability: Reachability = .reachable;
         for (stmts.start..stmts.end) |i| {
+            if (reachability == .@"unreachable") break;
+
             try indent(writer, self.depth);
-            try self.convertStmt(
+            reachability = try self.convertStmt(
                 alloc,
                 writer,
                 name_hint,
@@ -742,24 +780,26 @@ pub fn convertScope(
             );
         }
 
-        try indent(writer, self.depth);
-        if (!scope.has_trailing_semi) {
-            try writer.print("break :_{} ", .{
-                scope_id,
-            });
-        }
-        try self.convertStmt(
-            alloc,
-            writer,
-            name_hint,
-            last_stmt,
-            scope.has_trailing_semi,
-        );
-        if (scope.has_trailing_semi) {
+        if (reachability == .reachable) {
             try indent(writer, self.depth);
-            try writer.print("break :_{} {{}};\n", .{
-                scope_id,
-            });
+            if (!scope.has_trailing_semi) {
+                try writer.print("break :_{} ", .{
+                    scope_id,
+                });
+            }
+            reachability = try self.convertStmt(
+                alloc,
+                writer,
+                name_hint,
+                last_stmt,
+                scope.has_trailing_semi,
+            );
+            if (scope.has_trailing_semi and reachability == .reachable) {
+                try indent(writer, self.depth);
+                try writer.print("break :_{} {{}};\n", .{
+                    scope_id,
+                });
+            }
         }
     } else {
         try indent(writer, self.depth);
@@ -772,15 +812,20 @@ pub fn convertScope(
     try writer.print("}}", .{});
 }
 
+const Reachability = enum {
+    @"unreachable",
+    reachable,
+};
+
 pub fn convertStmt(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
     discard: bool,
-) Error!void {
-    switch (self.nodes()[node_id]) {
+) Error!Reachability {
+    const reachable = b: switch (self.nodes()[node_id]) {
         .decl => {
             try self.convertDecl(
                 alloc,
@@ -789,7 +834,32 @@ pub fn convertStmt(
                 node_id,
                 .local,
             );
+            break :b .reachable;
         },
+        .print => try self.convertPrint(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .@"return" => try self.convertReturn(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .@"break" => try self.convertBreak(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
+        .@"continue" => try self.convertContinue(
+            alloc,
+            writer,
+            name_hint,
+            node_id,
+        ),
         else => {
             if (discard) {
                 try writer.print("_ = ", .{});
@@ -801,15 +871,97 @@ pub fn convertStmt(
                 name_hint,
                 node_id,
             );
+            break :b .reachable;
         },
-    }
+    };
     try writer.print(";\n", .{});
+    return reachable;
+}
+
+pub fn convertPrint(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Reachability {
+    const print = self.nodes()[node_id].print;
+
+    try writer.writeAll("builtin_print(");
+    try self.convertExpr(
+        alloc,
+        writer,
+        name_hint,
+        print.expr,
+    );
+    try writer.writeAll(")");
+    return .reachable;
+}
+
+pub fn convertReturn(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Reachability {
+    const ret = self.nodes()[node_id].@"return";
+
+    try writer.writeAll("return");
+    if (ret.value) |v| {
+        try writer.writeAll("  ");
+        try self.convertExpr(
+            alloc,
+            writer,
+            name_hint,
+            v,
+        );
+    }
+    return .@"unreachable";
+}
+
+pub fn convertBreak(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Reachability {
+    const br = self.nodes()[node_id].@"break";
+
+    try writer.writeAll("break");
+    if (br.value) |v| {
+        try writer.writeAll("  ");
+        try self.convertExpr(
+            alloc,
+            writer,
+            name_hint,
+            v,
+        );
+    }
+    return .@"unreachable";
+}
+
+pub fn convertContinue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Reachability {
+    _ = alloc;
+    _ = name_hint;
+    _ = node_id;
+
+    try indent(writer, self.depth);
+    try writer.writeAll("continue");
+    return .@"unreachable";
 }
 
 pub fn convertFn(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -897,7 +1049,7 @@ pub fn convertFn(
 pub fn convertProto(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -943,7 +1095,7 @@ pub fn convertProto(
 pub fn convertIf(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -975,7 +1127,7 @@ pub fn convertIf(
 pub fn convertLoop(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {
@@ -993,7 +1145,7 @@ pub fn convertLoop(
 pub fn convertAssign(
     self: *@This(),
     alloc: std.mem.Allocator,
-    writer: *std.io.Writer,
+    writer: *std.Io.Writer,
     name_hint: *const NameHint,
     node_id: NodeId,
 ) Error!void {

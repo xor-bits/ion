@@ -5,7 +5,7 @@ const Parser = @import("Parser.zig");
 const IrGenerator = @import("IrGenerator.zig");
 const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
-// const Codegen = @import("Codegen.zig");
+const Codegen = @import("Codegen.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     const alloc = init.gpa;
@@ -37,9 +37,17 @@ pub fn main(init: std.process.Init) !u8 {
     const destin_file = try cwd.createFile(io, destin_path, .{});
     defer destin_file.close(io);
 
-    var source_reader = source_file.reader(io, &.{});
+    var source_buffer: [0x1000]u8 = undefined;
+    var source_reader = source_file.reader(io, &source_buffer);
     const source = try source_reader.interface.allocRemaining(alloc, .limited64(std.math.maxInt(u32)));
     defer alloc.free(source);
+
+    var output_buffer: [0x1000]u8 = undefined;
+    var output_writer = destin_file.writer(io, &output_buffer);
+
+    // var write_buffer: [0x8000]u8 = undefined;
+    // var source_writer = self.destin_file.writer(&write_buffer);
+    // const writer = &source_writer.interface;
 
     std.debug.print("running lexer\n", .{});
     var tokenizer: Tokenizer = .{ .source = source };
@@ -94,17 +102,18 @@ pub fn main(init: std.process.Init) !u8 {
 
     // sema.dump();
 
-    // std.debug.print("running transpiler\n", .{});
-    // var codegen: Codegen = .{ .parser = &parser, .destin_file = destin_file };
-    // defer codegen.deinit(alloc);
-    // codegen.run(alloc) catch |err| switch (err) {
-    //     error.OutOfMemory, error.WriteFailed => return err,
-    //     else => {
-    //         codegen.printErrors();
-    //         return 3;
-    //     },
-    // };
+    std.debug.print("running transpiler\n", .{});
+    var codegen: Codegen = .{ .parser = &parser };
+    defer codegen.deinit(alloc);
+    codegen.run(alloc, &output_writer.interface) catch |err| switch (err) {
+        error.OutOfMemory, error.WriteFailed => return err,
+        else => {
+            codegen.printErrors();
+            return 3;
+        },
+    };
 
+    try output_writer.flush();
     return 0;
 }
 
