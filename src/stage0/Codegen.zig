@@ -442,7 +442,7 @@ pub fn convertDecl(
     if (mode == .local) {
         try writer.print(";\n", .{});
         try indent(writer, self.depth);
-        try writer.print("_ = .{{{f}}}", .{
+        try writer.print("_ = .{{&{f}}}", .{
             variable.print(self.source()),
         });
     }
@@ -679,12 +679,12 @@ pub fn convertExpr(
             });
         },
         .float_lit => |v| {
-            try writer.print("{}", .{
+            try writer.print("@as(f64, {})", .{
                 v.val,
             });
         },
         .int_lit => |v| {
-            try writer.print("{}", .{
+            try writer.print("@as(i64, {})", .{
                 v.val,
             });
         },
