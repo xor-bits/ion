@@ -74,8 +74,11 @@ pub fn main(init: std.process.Init) !u8 {
     ir_gen.dump();
 
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
+    // vm.verbose = true;
+    // vm.gas = 1000;
+    // vm.mode = .eval;
     defer vm.deinit(alloc);
-    vm.run(alloc, .{}) catch |err| switch (err) {
+    vm.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => {
             vm.printErrors();

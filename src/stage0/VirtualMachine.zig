@@ -8,9 +8,13 @@ const Value = IrGenerator.Value;
 const Span = @import("Tokenizer.zig").Span;
 const VirtualMachine = @This();
 
-pub const Config = struct {
-    gas: ?usize = null,
-    verbose: bool = false,
+pub const EvalMode = enum {
+    /// evaluate everything, including loops
+    /// ; comptime
+    eval,
+    /// generate code and evaluate loops only once
+    /// ; runtime
+    compile,
 };
 
 pub const Frame = struct {
@@ -22,6 +26,7 @@ pub const Frame = struct {
     return_register: Instr.Id = .start,
     return_type: ?Type.Id = null,
     symbol: Span = .{},
+    // mode: EvalMode = .compile,
 
     pub fn clear(
         self: *@This(),
@@ -458,6 +463,12 @@ type_infos: std.MultiArrayList(TypeInfo) = .empty,
 type_map: std.HashMapUnmanaged(Type, Type.Id, Type.Context, 80) = .empty,
 arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 errors: std.ArrayList(ErrorMsg) = .empty,
+
+/// fuel for instruction, null for unlimited
+gas: ?usize = null,
+/// debug print all frame pop/push events and register set/get events
+verbose: bool = false,
+mode: EvalMode = .compile,
 ir_gen: *const IrGenerator,
 
 pub const builtin_registers: [IrGenerator.Value.builtin_count]Register = [_]Register{
@@ -551,13 +562,8 @@ pub fn pushError(
 pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
-    config: Config,
 ) Error!void {
-    _ = try self.pushFrame(
-        alloc,
-        config.verbose,
-        .start,
-    );
+    _ = try self.pushFrame(alloc, .start);
 
     const instrs = self.ir_gen.instrs.slice();
     const extras = self.ir_gen.extras.items;
@@ -583,16 +589,14 @@ pub fn run(
     } }, .slice_u8);
 
     std.debug.print("VM START\n", .{});
-    var gas: ?usize = config.gas;
-    const gas_ptr = if (gas) |*_g| _g else null;
+    const gas = if (self.gas) |*_g| _g else null;
     while (true) {
         self.runOnce(
             alloc,
             instrs,
             extras,
             source,
-            config,
-            gas_ptr,
+            gas,
         ) catch |err| switch (err) {
             error.OutOfGas => break,
             else => return err,
@@ -620,7 +624,6 @@ fn runOnce(
     instrs: std.MultiArrayList(Instr).Slice,
     extras: []const u32,
     source: []const u8,
-    config: Config,
     gas: ?*usize,
 ) Error!void {
     if (gas) |gas_left| {
@@ -637,7 +640,7 @@ fn runOnce(
     };
     frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
 
-    if (config.verbose) std.debug.print("exec {f} ({t})\n", .{
+    if (self.verbose) std.debug.print("exec {f} ({t})\n", .{
         instr_now,
         opcode,
     });
@@ -648,18 +651,16 @@ fn runOnce(
     switch (opcode) {
         .str_lit => |v| {
             const str = v.value.read(source);
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 Register{ .type = .slice_u8, .val = .{ .string = str } },
             );
         },
         .int_lit => |v| {
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 Register.intLit(v.value),
@@ -670,7 +671,6 @@ fn runOnce(
             const func_reg = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.func,
             );
@@ -697,7 +697,6 @@ fn runOnce(
 
             const call_frame = try self.pushFrame(
                 alloc,
-                config.verbose,
                 ip,
             );
             call_frame.symbol = func_reg.name;
@@ -720,7 +719,6 @@ fn runOnce(
                 const passed_arg = try self.get(
                     alloc,
                     instr_now,
-                    config.verbose,
                     frame,
                     arg.val,
                 );
@@ -735,9 +733,8 @@ fn runOnce(
                         },
                     );
                 }
-                try set(
+                try self.set(
                     alloc,
-                    config.verbose,
                     call_frame,
                     @enumFromInt(@intFromEnum(ip) + i),
                     passed_arg,
@@ -748,7 +745,6 @@ fn runOnce(
             const val: Register = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.value,
             );
@@ -793,9 +789,8 @@ fn runOnce(
                     };
                 },
             };
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 dst,
@@ -805,14 +800,12 @@ fn runOnce(
             const lhs: Register = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.lhs,
             );
             const rhs: Register = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.rhs,
             );
@@ -843,9 +836,8 @@ fn runOnce(
                     };
                 },
             };
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 dst,
@@ -857,7 +849,6 @@ fn runOnce(
             const target = try self.getPtr(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.target.asIndex() orelse {
                     return self.pushError(
@@ -871,7 +862,6 @@ fn runOnce(
             target.* = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.val,
             );
@@ -881,13 +871,11 @@ fn runOnce(
             const proto = try self.getType(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.proto,
             );
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 Register.func(proto, frame.instr),
@@ -908,7 +896,6 @@ fn runOnce(
                 param_type.* = try self.getType(
                     alloc,
                     instr_now,
-                    config.verbose,
                     frame,
                     param.val,
                 );
@@ -916,7 +903,6 @@ fn runOnce(
             const return_type = try self.getType(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 proto.return_type,
             );
@@ -930,9 +916,8 @@ fn runOnce(
                     .@"return" = return_type,
                 } },
             );
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 Register.ty(proto_type),
@@ -946,18 +931,17 @@ fn runOnce(
             const break_val = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.val,
             );
 
             while (self.topFrame().block != v.block) {
-                self.popFrame(config.verbose);
+                self.popFrame();
             }
             const break_frame = self.topFrame();
             const return_register = break_frame.return_register;
             const return_type = break_frame.return_type;
-            self.popFrame(config.verbose);
+            self.popFrame();
 
             if (return_type) |t| {
                 if (break_val.type != t) {
@@ -969,9 +953,8 @@ fn runOnce(
                     );
                 }
             }
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 self.topFrame(),
                 return_register,
                 break_val,
@@ -979,7 +962,7 @@ fn runOnce(
         },
         .@"continue" => |v| {
             while (self.topFrame().block != v.block) {
-                self.popFrame(config.verbose);
+                self.popFrame();
             }
             const new_top_frame = self.topFrame();
             new_top_frame.clear();
@@ -990,14 +973,12 @@ fn runOnce(
             var reg = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.val,
             );
             reg.name = v.name;
-            try set(
+            try self.set(
                 alloc,
-                config.verbose,
                 frame,
                 instr_now,
                 reg,
@@ -1007,7 +988,6 @@ fn runOnce(
             const val = try self.get(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.val,
             );
@@ -1044,7 +1024,6 @@ fn runOnce(
         .block => |v| {
             const block_frame = try self.pushFrame(
                 alloc,
-                config.verbose,
                 frame.instr,
             );
             block_frame.return_register = instr_now;
@@ -1054,7 +1033,6 @@ fn runOnce(
             const takes_on_true_branch = try self.getBool(
                 alloc,
                 instr_now,
-                config.verbose,
                 frame,
                 v.boolean,
             );
@@ -1062,14 +1040,12 @@ fn runOnce(
             if (takes_on_true_branch) {
                 const block_frame = try self.pushFrame(
                     alloc,
-                    config.verbose,
                     frame.instr,
                 );
                 block_frame.return_register = instr_now;
             } else {
                 const block_frame = try self.pushFrame(
                     alloc,
-                    config.verbose,
                     v.on_true_block_end,
                 );
                 block_frame.return_register = instr_now;
@@ -1088,13 +1064,13 @@ fn span(
 }
 
 fn set(
+    self: *@This(),
     alloc: std.mem.Allocator,
-    verbose: bool,
     frame: *Frame,
     reg: Instr.Id,
     val: Register,
 ) Error!void {
-    if (verbose) std.debug.print("set %{}\n", .{@intFromEnum(reg)});
+    if (self.verbose) std.debug.print("set %{}\n", .{@intFromEnum(reg)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
@@ -1102,11 +1078,10 @@ fn get(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr.Id,
-    verbose: bool,
     _frame: *Frame,
     reg: Value,
 ) Error!Register {
-    if (verbose) std.debug.print("get {f}\n", .{reg});
+    if (self.verbose) std.debug.print("get {f}\n", .{reg});
 
     var frame = _frame;
     const idx = reg.asIndex() orelse {
@@ -1137,11 +1112,10 @@ fn getPtr(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr.Id,
-    verbose: bool,
     _frame: *Frame,
     reg: Instr.Id,
 ) Error!*Register {
-    if (verbose) std.debug.print("getPtr {f}\n", .{reg});
+    if (self.verbose) std.debug.print("getPtr {f}\n", .{reg});
 
     var frame = _frame;
     while (true) {
@@ -1168,11 +1142,10 @@ fn getType(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr.Id,
-    verbose: bool,
     frame: *Frame,
     reg: Value,
 ) Error!Type.Id {
-    const raw = try self.get(alloc, instr, verbose, frame, reg);
+    const raw = try self.get(alloc, instr, frame, reg);
     return try self.regAsType(alloc, instr, raw);
 }
 
@@ -1180,11 +1153,10 @@ fn getBool(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr.Id,
-    verbose: bool,
     frame: *Frame,
     reg: Value,
 ) Error!bool {
-    const raw = try self.get(alloc, instr, verbose, frame, reg);
+    const raw = try self.get(alloc, instr, frame, reg);
     return try self.regAsBool(alloc, instr, raw);
 }
 
@@ -1323,10 +1295,10 @@ fn topFrameConst(
 fn pushFrame(
     self: *@This(),
     alloc: std.mem.Allocator,
-    verbose: bool,
     ip: Instr.Id,
+    // mode: EvalMode,
 ) error{OutOfMemory}!*Frame {
-    if (verbose) std.debug.print("push frame {f}\n", .{ip});
+    if (self.verbose) std.debug.print("push frame {f}\n", .{ip});
     const frame = if (self.reusable_frames.popFirst()) |reused|
         frameFromNode(reused)
     else b: {
@@ -1337,6 +1309,7 @@ fn pushFrame(
 
     frame.block = ip;
     frame.instr = ip;
+    // frame.mode = mode;
 
     self.frames.prepend(&frame.node);
     return frame;
@@ -1344,10 +1317,9 @@ fn pushFrame(
 
 fn popFrame(
     self: *@This(),
-    verbose: bool,
 ) void {
     const frame = frameFromNode(self.frames.popFirst().?);
-    if (verbose) std.debug.print("pop frame {f}\n", .{frame.block});
+    if (self.verbose) std.debug.print("pop frame {f}\n", .{frame.block});
     frame.clear();
     self.reusable_frames.prepend(&frame.node);
 }

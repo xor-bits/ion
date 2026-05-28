@@ -21,7 +21,7 @@ let func = fn(b: bool): u32 {
 
 let main = fn() {
     print("hello world");
-    print(func(false));
+    print(func(if true { false } else { true }));
     
     let v = {
         let x = 5;
