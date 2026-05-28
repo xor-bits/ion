@@ -22,6 +22,9 @@ let func = fn(b: bool): u32 {
 let main = fn() {
     print("hello world");
     print(func(if true { false } else { true }));
+
+    let pi = 3.14159265;
+    print(pi * pi);
     
     let v = {
         let x = 5;

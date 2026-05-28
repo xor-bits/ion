@@ -84,7 +84,7 @@ pub const Register = struct {
     }
 
     fn floatLit(
-        f: u64,
+        f: f64,
     ) @This() {
         return .{ .type = .f64, .val = .{
             .f64 = f,
@@ -666,7 +666,14 @@ fn runOnce(
                 Register.intLit(v.value),
             );
         },
-        // .float_lit => {},
+        .float_lit => |v| {
+            try self.set(
+                alloc,
+                frame,
+                instr_now,
+                Register.floatLit(v.value),
+            );
+        },
         .call => |v| {
             const func_reg = try self.get(
                 alloc,
