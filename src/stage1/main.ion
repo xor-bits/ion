@@ -19,12 +19,26 @@ let func = fn(b: bool): u32 {
     5 as u32
 };
 
+let is_isize = fn(v: isize) {};
+let is_f64 = fn(v: f64) {};
+let is_slice_u8 = fn(v: []u8) {};
+
 let main = fn() {
     print("hello world");
     print(func(if true { false } else { true }));
 
-    let pi = 3.14159265;
+    let mut pi = 3.14159265;
     print(pi * pi);
+
+    let local_function = fn(v: isize) {
+        // `pi` is not accessible from this scope
+        // print(pi);
+    };
+    local_function(5);
+
+    is_isize(0);      // int literals are isize
+    is_f64(0.0);      // float literals are f64
+    is_slice_u8("0"); // string literals are []u8
     
     let v = {
         let x = 5;

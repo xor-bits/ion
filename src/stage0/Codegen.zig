@@ -1023,6 +1023,16 @@ pub fn convertFn(
     if (!proto.@"extern") {
         try writer.print(" {{\n", .{});
 
+        for (proto.params.start..proto.params.end) |i| {
+            const param = self.nodes()[i].param;
+            const param_variable = try self.findVariable(alloc, param.ident);
+
+            try indent(writer, self.depth);
+            try writer.print("_ = .{{{f}}};\n", .{
+                param_variable.print(self.source()),
+            });
+        }
+
         try indent(writer, self.depth);
         try writer.writeAll("const @\"result\" = ");
         try self.convertScope(

@@ -20,6 +20,7 @@ pub const EvalMode = enum {
 pub const Frame = struct {
     block: Instr.Id = .start,
     instr: Instr.Id = .start,
+    function: ?Instr.Id = null,
     registers: std.AutoHashMapUnmanaged(Instr.Id, Register) = .{},
     arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
     node: std.SinglyLinkedList.Node = .{},
@@ -579,7 +580,7 @@ pub fn run(
 ) Error!void {
     self.error_alloc = alloc;
 
-    _ = try self.pushFrame(alloc, .start);
+    _ = try self.pushFrame(alloc, .start, .global);
 
     const instrs = self.ir_gen.instrs.slice();
     const extras = self.ir_gen.extras.items;
@@ -660,7 +661,7 @@ fn runOnce(
         self.ip,
         opcode,
     });
-    errdefer std.debug.print("error at {f} ({t})\n", .{
+    errdefer if (self.verbose) std.debug.print("error at {f} ({t})\n", .{
         self.ip,
         opcode,
     });
@@ -710,11 +711,7 @@ fn runOnce(
             if (self.mode == .eval) {
                 const ip = func_reg.val.func.entry;
 
-                const call_frame = try self.pushFrame(alloc, ip);
-                call_frame.symbol = func_reg.name;
-                call_frame.return_register = self.ip;
-                call_frame.return_type = proto.func.@"return";
-                // std.debug.print("{s}\n", .{func_reg.name.read(source)});
+                const call_frame = try self.allocFrame(alloc);
 
                 for (args, 0..) |arg, i| {
                     const passed_arg = try self.get(arg.val);
@@ -735,6 +732,13 @@ fn runOnce(
                         passed_arg,
                     );
                 }
+
+                self.pushAllocatedFrame(ip, call_frame, .local);
+                call_frame.symbol = func_reg.name;
+                call_frame.return_register = self.ip;
+                call_frame.return_type = proto.func.@"return";
+                call_frame.function = ip;
+                // std.debug.print("{s}\n", .{func_reg.name.read(source)});
             } else {
                 for (args, 0..) |arg, i| {
                     const passed_arg = try self.get(arg.val);
@@ -749,6 +753,10 @@ fn runOnce(
                         );
                     }
                 }
+                try self.set(
+                    alloc,
+                    Register.runtime(proto.func.@"return"),
+                );
             }
         },
         .unary_op => |v| {
@@ -844,6 +852,8 @@ fn runOnce(
                 alloc,
                 Register.func(proto, frame.instr),
             );
+            const ip = frame.instr;
+            frame.instr = v.body_block_end;
 
             if (self.mode == .compile) {
                 const proto_type = self.readType(proto);
@@ -855,7 +865,7 @@ fn runOnce(
                     );
                 }
 
-                const call_frame = try self.pushFrame(alloc, frame.instr);
+                const call_frame = try self.pushFrame(alloc, ip, .local);
                 call_frame.return_register = null;
                 call_frame.return_type = proto_type.func.@"return";
                 // std.debug.print("{s}\n", .{func_reg.name.read(source)});
@@ -864,13 +874,11 @@ fn runOnce(
                     try self.setIndirect(
                         alloc,
                         call_frame,
-                        @enumFromInt(@intFromEnum(frame.instr) + i),
+                        @enumFromInt(@intFromEnum(ip) + i),
                         Register.runtime(param),
                     );
                 }
             }
-
-            frame.instr = v.body_block_end;
         },
         .proto => |v| {
             const extra_proto = extras[@intFromEnum(v.extra)..];
@@ -951,8 +959,9 @@ fn runOnce(
             try self.set(alloc, reg);
         },
         .dbg_print => |v| {
-            if (self.mode == .compile) return;
             const val = try self.get(v.val);
+            if (self.mode == .compile) return;
+
             switch (val.val) {
                 .type => |t| {
                     std.debug.print("{f}\n", .{t.print(self)});
@@ -992,7 +1001,11 @@ fn runOnce(
             }
         },
         .block => |v| {
-            const block_frame = try self.pushFrame(alloc, frame.instr);
+            const block_frame = try self.pushFrame(
+                alloc,
+                frame.instr,
+                .local_same,
+            );
             block_frame.return_register = self.ip;
             frame.instr = v.block_end;
         },
@@ -1001,16 +1014,32 @@ fn runOnce(
 
             if (compile_time_known_branch) |takes_on_true_branch| {
                 if (takes_on_true_branch) {
-                    const on_true_block_frame = try self.pushFrame(alloc, frame.instr);
+                    const on_true_block_frame = try self.pushFrame(
+                        alloc,
+                        frame.instr,
+                        .local_same,
+                    );
                     on_true_block_frame.return_register = self.ip;
                 } else {
-                    const on_false_block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                    const on_false_block_frame = try self.pushFrame(
+                        alloc,
+                        v.on_true_block_end,
+                        .local_same,
+                    );
                     on_false_block_frame.return_register = self.ip;
                 }
             } else {
-                const on_false_block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                const on_false_block_frame = try self.pushFrame(
+                    alloc,
+                    v.on_true_block_end,
+                    .local_same,
+                );
                 on_false_block_frame.return_register = frame.instr;
-                const on_true_block_frame = try self.pushFrame(alloc, frame.instr);
+                const on_true_block_frame = try self.pushFrame(
+                    alloc,
+                    frame.instr,
+                    .local_same,
+                );
                 on_true_block_frame.return_register = self.ip;
             }
 
@@ -1057,28 +1086,11 @@ fn get(
 ) Error!Register {
     if (self.verbose) std.debug.print("get {f}\n", .{reg});
 
-    var frame = self.topFrame();
     const idx = reg.asIndex() orelse {
         return builtin_registers[@intFromEnum(reg)];
     };
 
-    while (true) {
-        if (frame.registers.get(idx)) |found| {
-            return found;
-        } else {
-            @branchHint(.cold);
-        }
-
-        // FIXME: handle captures properly
-        const next = frame.node.next orelse {
-            return self.pushError(
-                self.span(self.ip),
-                "internal error: register not found",
-                .{},
-            );
-        };
-        frame = @fieldParentPtr("node", next);
-    }
+    return (try self.getPtr(idx)).*;
 }
 
 fn getPtr(
@@ -1088,8 +1100,17 @@ fn getPtr(
     if (self.verbose) std.debug.print("getPtr {f}\n", .{reg});
 
     var frame = self.topFrame();
+    const current_function = frame.function;
+
     while (true) {
         if (frame.registers.getPtr(reg)) |found| {
+            if (frame.function != null and frame.function != current_function) {
+                return self.pushError(
+                    self.span(self.ip),
+                    "variable not accessible",
+                    .{},
+                );
+            }
             return found;
         } else {
             @branchHint(.cold);
@@ -1250,26 +1271,51 @@ fn topFrameConst(
     return frameFromNode(self.frames.first.?);
 }
 
+fn allocFrame(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+) error{OutOfMemory}!*Frame {
+    if (self.reusable_frames.popFirst()) |reused| {
+        return frameFromNode(reused);
+    } else {
+        const frame = try alloc.create(Frame);
+        frame.* = .{};
+        return frame;
+    }
+}
+
+const FrameKind = enum { global, local, local_same };
+
+fn pushAllocatedFrame(
+    self: *@This(),
+    ip: Instr.Id,
+    frame: *Frame,
+    kind: FrameKind,
+    // mode: EvalMode,
+) void {
+    if (self.verbose) std.debug.print("push frame {f}\n", .{ip});
+
+    frame.block = ip;
+    frame.instr = ip;
+    switch (kind) {
+        .local => frame.function = ip,
+        .local_same => frame.function = self.topFrame().function,
+        else => {},
+    }
+    // frame.mode = mode;
+
+    self.frames.prepend(&frame.node);
+}
+
 fn pushFrame(
     self: *@This(),
     alloc: std.mem.Allocator,
     ip: Instr.Id,
+    kind: FrameKind,
     // mode: EvalMode,
 ) error{OutOfMemory}!*Frame {
-    if (self.verbose) std.debug.print("push frame {f}\n", .{ip});
-    const frame = if (self.reusable_frames.popFirst()) |reused|
-        frameFromNode(reused)
-    else b: {
-        const frame = try alloc.create(Frame);
-        frame.* = .{};
-        break :b frame;
-    };
-
-    frame.block = ip;
-    frame.instr = ip;
-    // frame.mode = mode;
-
-    self.frames.prepend(&frame.node);
+    const frame = try self.allocFrame(alloc);
+    self.pushAllocatedFrame(ip, frame, kind);
     return frame;
 }
 
