@@ -2,7 +2,7 @@ const std = @import("std");
 
 //
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_stage0_compiler.addArgs(args);
     }
+    try run_stage0_compiler.step.addWatchInput(b.path("./src/stage1/main.ion"));
 
     const run_step = b.step("run", "run the compiler");
     run_step.dependOn(&run_stage0_compiler.step);

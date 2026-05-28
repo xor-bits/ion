@@ -33,8 +33,8 @@ let main = fn() {
     print v;
 
     if (false) {
-        // branches that are known to be unreachable at
-        // compile time are not checked (by design (design stolen from Zig))
+        // branches that are known to be unreachable at compile
+        // time are not checked (by design (design stolen from Zig))
         let would_error: bool = "hello";
     };
 
@@ -53,6 +53,7 @@ let main = fn() {
     // func("hello");
     // let n: []u8 = func(true);
     // func(1, 2);
+    // sign(32); // sign is a function type, not a function
 
     print("fib:");
     let mut a = 0 as u64;
