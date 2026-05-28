@@ -604,7 +604,7 @@ pub fn run(
         .child = .u8,
     } }, .slice_u8);
 
-    std.debug.print("VM START\n", .{});
+    // std.debug.print("VM START\n", .{});
     const gas = if (self.gas) |*_g| _g else null;
     while (true) {
         self.runOnce(

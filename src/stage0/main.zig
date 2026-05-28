@@ -7,10 +7,32 @@ const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
 const Codegen = @import("Codegen.zig");
 
-const Command = enum {
-    @"--help",
-    repl,
-    build,
+const Command = struct {
+    self_exe: []const u8 = "",
+    help: bool = false,
+    dump_tokens: bool = false,
+    dump_ast: bool = false,
+    dump_ir: bool = false,
+    dump_vm: bool = false,
+    subcmd: ?SubCommand = null,
+
+    const Flag = enum {
+        help,
+        @"dump-tokens",
+        @"dump-ast",
+        @"dump-ir",
+        @"dump-vm",
+    };
+};
+
+const SubCommand = union(enum) {
+    eval,
+    build: struct {
+        source_path: []const u8 = "",
+        destin_path: []const u8 = "",
+    },
+
+    const Tag = @typeInfo(@This()).@"union".tag_type.?;
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -20,24 +42,97 @@ pub fn main(init: std.process.Init) !u8 {
     // const source_root = try std.process.getEnvMap(gpf.allocator());
     // source_root.get("");
 
-    var args = init.minimal.args.iterate();
-    defer args.deinit();
-    const self_exe = args.next().?;
-
-    const command_str = args.next() orelse {
-        _ = help(self_exe);
-        return 1;
-    };
-    const command = std.meta.stringToEnum(Command, command_str) orelse {
-        _ = help(self_exe);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    const cli = parseCli(args) orelse {
         return 1;
     };
 
-    return switch (command) {
-        .@"--help" => help(self_exe),
-        .repl => repl(io, alloc),
-        .build => build(io, alloc, &args),
+    const subcmd = cli.subcmd orelse {
+        _ = help(cli.self_exe);
+        return if (cli.help) 0 else 1;
     };
+
+    return switch (subcmd) {
+        .eval => eval(io, alloc, cli),
+        .build => build(io, alloc, cli),
+    };
+}
+
+fn parseCli(
+    args: []const [:0]const u8,
+) ?Command {
+    var config: Command = .{};
+    var subcmd_found: ?SubCommand.Tag = null;
+    var nth_regular_arg: usize = 0;
+
+    config.self_exe = args[0];
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "-h")) {
+            config.help = true;
+            continue;
+        } else if (std.mem.startsWith(u8, arg, "--")) {
+            const flag = std.meta.stringToEnum(Command.Flag, arg[2..]) orelse {
+                std.log.err("unknown cli flag '{s}'", .{arg[2..]});
+                _ = help(config.self_exe);
+                return null;
+            };
+            switch (flag) {
+                .help => config.help = true,
+                .@"dump-tokens" => config.dump_tokens = true,
+                .@"dump-ast" => config.dump_ast = true,
+                .@"dump-ir" => config.dump_ir = true,
+                .@"dump-vm" => config.dump_vm = true,
+            }
+            continue;
+        } else if (subcmd_found) |subcmd| {
+            switch (subcmd) {
+                .build => switch (nth_regular_arg) {
+                    0 => {
+                        config.subcmd.?.build.source_path = arg;
+                        nth_regular_arg += 1;
+                        continue;
+                    },
+                    1 => {
+                        config.subcmd.?.build.destin_path = arg;
+                        nth_regular_arg += 1;
+                        continue;
+                    },
+                    else => {},
+                },
+                else => {},
+            }
+        } else if (std.meta.stringToEnum(SubCommand.Tag, arg)) |subcmd| {
+            subcmd_found = subcmd;
+            switch (subcmd) {
+                .build => config.subcmd = .{ .build = .{} },
+                .eval => config.subcmd = .eval,
+            }
+            continue;
+        }
+
+        std.log.err("unexpected cli argument '{s}'", .{arg});
+        _ = help(config.self_exe);
+        return null;
+    }
+
+    if (subcmd_found == null and !config.help) {
+        _ = help(config.self_exe);
+        return null;
+    }
+
+    if (subcmd_found == .build and nth_regular_arg == 0) {
+        std.log.err("missing [source_path] argument", .{});
+        _ = help(config.self_exe);
+        return null;
+    }
+
+    if (subcmd_found == .build and nth_regular_arg == 1) {
+        std.log.err("missing [output_path] argument", .{});
+        _ = help(config.self_exe);
+        return null;
+    }
+
+    return config;
 }
 
 fn help(
@@ -48,39 +143,143 @@ fn help(
         \\  {s} [command] [options]
         \\
         \\commands
-        \\  repl
-        \\  build
+        \\  eval                : run ion code in a VM
+        \\  build               : transpile ion code to zig code
         \\
         \\options
-        \\  --help
+        \\  --help              : show this
+        \\  --dump-tokens       : print tokens to stderr
+        \\  --dump-ast          : print ast to stderr
+        \\  --dump-ir           : print ir to stderr
+        \\  --dump-vm           : print vm control flow to stderr
         \\
     , .{self_exe});
     return 0;
 }
 
-fn repl(
+fn help_eval(
+    self_exe: []const u8,
+) u8 {
+    std.debug.print(
+        \\usage:
+        \\  {s} eval [options]
+        \\
+        \\options
+        \\  --help              : show this
+        \\  --dump-tokens       : print tokens to stderr
+        \\  --dump-ast          : print ast to stderr
+        \\  --dump-ir           : print ir to stderr
+        \\  --dump-vm           : print vm control flow to stderr
+        \\
+    , .{self_exe});
+    return 0;
+}
+
+fn help_build(
+    self_exe: []const u8,
+) u8 {
+    std.debug.print(
+        \\usage:
+        \\  {s} build [source_path] [output_path] [options]
+        \\
+        \\options
+        \\  --help              : show this
+        \\  --dump-tokens       : print tokens to stderr
+        \\  --dump-ast          : print ast to stderr
+        \\  --dump-ir           : print ir to stderr
+        \\  --dump-vm           : print vm control flow to stderr
+        \\
+    , .{self_exe});
+    return 0;
+}
+
+fn eval(
     io: std.Io,
     alloc: std.mem.Allocator,
+    cli: Command,
 ) !u8 {
-    _ = io;
-    _ = alloc;
-    std.debug.panic("TODO", .{});
+    if (cli.help) {
+        return help_eval(cli.self_exe);
+    }
+
+    std.debug.print("write your program here, evaluate with Ctrl+D\n", .{});
+
+    var stdin_buffer: [0x200]u8 = undefined;
+    const stdin = std.Io.File.stdin();
+    var stdin_reader = stdin.reader(io, &stdin_buffer);
+    const source = try stdin_reader.interface.allocRemaining(
+        alloc,
+        .limited64(std.math.maxInt(u32)),
+    );
+    defer alloc.free(source);
+
+    std.debug.print("\n", .{});
+
+    // stdin.readPositionalAll(io, buffer: []u8, offset: u64)
+
+    var tokenizer: Tokenizer = .{ .source = source };
+    defer tokenizer.deinit(alloc);
+    try tokenizer.run(alloc);
+
+    if (cli.dump_tokens)
+        tokenizer.dump();
+
+    var parser: Parser = .{ .tokenizer = &tokenizer };
+    defer parser.deinit(alloc);
+    parser.run(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            parser.printErrors();
+            return 2;
+        },
+    };
+
+    if (cli.dump_ast)
+        parser.dump();
+
+    var ir_gen: IrGenerator = .{ .parser = &parser };
+    defer ir_gen.deinit(alloc);
+    ir_gen.run(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            ir_gen.printErrors();
+            return 3;
+        },
+    };
+
+    if (cli.dump_ir)
+        ir_gen.dump();
+
+    var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
+    vm.verbose = cli.dump_vm;
+    // vm.gas = 1000;
+    vm.mode = .eval;
+    defer vm.deinit(alloc);
+    vm.run(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            vm.printErrors();
+            return 4;
+        },
+    };
+
+    if (cli.dump_vm)
+        vm.dump();
+
+    return 0;
 }
 
 fn build(
     io: std.Io,
     alloc: std.mem.Allocator,
-    args: *std.process.Args.Iterator,
+    cli: Command,
 ) !u8 {
-    const source_path = args.next() orelse {
-        std.log.err("expected source file argument", .{});
-        return 1;
-    };
+    if (cli.help) {
+        return help_build(cli.self_exe);
+    }
 
-    const destin_path = args.next() orelse {
-        std.log.err("expected destination file argument", .{});
-        return 1;
-    };
+    const source_path = cli.subcmd.?.build.source_path;
+    const destin_path = cli.subcmd.?.build.destin_path;
 
     const cwd = std.Io.Dir.cwd();
 
@@ -102,14 +301,15 @@ fn build(
     // var source_writer = self.destin_file.writer(&write_buffer);
     // const writer = &source_writer.interface;
 
-    std.debug.print("running lexer\n", .{});
+    // std.debug.print("running lexer\n", .{});
     var tokenizer: Tokenizer = .{ .source = source };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
-    tokenizer.dump();
+    if (cli.dump_tokens)
+        tokenizer.dump();
 
-    std.debug.print("running parser\n", .{});
+    // std.debug.print("running parser\n", .{});
     var parser: Parser = .{ .tokenizer = &tokenizer };
     defer parser.deinit(alloc);
     parser.run(alloc) catch |err| switch (err) {
@@ -120,7 +320,8 @@ fn build(
         },
     };
 
-    parser.dump();
+    if (cli.dump_ast)
+        parser.dump();
 
     var ir_gen: IrGenerator = .{ .parser = &parser };
     defer ir_gen.deinit(alloc);
@@ -132,13 +333,13 @@ fn build(
         },
     };
 
-    ir_gen.dump();
+    if (cli.dump_ir)
+        ir_gen.dump();
 
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
-    vm.mode = .compile;
-    vm.verbose = true;
+    vm.verbose = cli.dump_vm;
     // vm.gas = 1000;
-    // vm.mode = .eval;
+    vm.mode = .eval;
     defer vm.deinit(alloc);
     vm.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -148,7 +349,8 @@ fn build(
         },
     };
 
-    // vm.dump();
+    if (cli.dump_vm)
+        vm.dump();
 
     // var sema: Sema = .{ .ir_gen = &ir_gen };
     // defer sema.deinit(alloc);
@@ -156,7 +358,7 @@ fn build(
 
     // sema.dump();
 
-    std.debug.print("running transpiler\n", .{});
+    // std.debug.print("running transpiler\n", .{});
     var codegen: Codegen = .{ .parser = &parser };
     defer codegen.deinit(alloc);
     codegen.run(alloc, &output_writer.interface) catch |err| switch (err) {

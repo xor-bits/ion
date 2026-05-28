@@ -22,43 +22,51 @@ pub fn build(b: *std.Build) void {
     b.default_step.dependOn(&install_stage0_compiler.step);
 
     const run_stage0_compiler = b.addRunArtifact(stage0_compiler);
-    run_stage0_compiler.addArg("build");
-    run_stage0_compiler.addFileArg(b.path("./src/stage1/main.ion"));
-    run_stage0_compiler.step.addWatchInput(b.path("./src/stage1/main.ion")) catch @panic("OOM");
-    const stage1_transpiled_src = run_stage0_compiler.addOutputFileArg("out.zig");
-    run_stage0_compiler.has_side_effects = true;
+    if (b.args) |args| {
+        run_stage0_compiler.addArgs(args);
+    }
 
     const run_step = b.step("run", "run the compiler");
     run_step.dependOn(&run_stage0_compiler.step);
 
-    if (b.option(bool, "dump", "dump stage0 output") == true) {
-        const dump_stage1_transpiled_src = b.addSystemCommand(&.{
-            "cat",
-        });
-        dump_stage1_transpiled_src.addFileArg(stage1_transpiled_src);
-        run_step.dependOn(&dump_stage1_transpiled_src.step);
-    }
+    //     const run_stage0_compiler = b.addRunArtifact(stage0_compiler);
+    //     run_stage0_compiler.addArg("build");
+    //     run_stage0_compiler.addFileArg(b.path("./src/stage1/main.ion"));
+    //     run_stage0_compiler.step.addWatchInput(b.path("./src/stage1/main.ion")) catch @panic("OOM");
+    //     const stage1_transpiled_src = run_stage0_compiler.addOutputFileArg("out.zig");
+    //     run_stage0_compiler.has_side_effects = true;
 
-    const stage1 = b.createModule(.{
-        .root_source_file = stage1_transpiled_src,
-        .target = target,
-        .optimize = optimize,
-        // .link_libc = true,
-    });
-    // stage1.linkSystemLibrary("LLVM-21", .{});
+    //     const run_step = b.step("run", "run the compiler");
+    //     run_step.dependOn(&run_stage0_compiler.step);
 
-    const stage1_compiler = b.addExecutable(.{
-        .name = "ion-stage1",
-        .root_module = stage1,
-    });
+    //     if (b.option(bool, "dump", "dump stage0 output") == true) {
+    //         const dump_stage1_transpiled_src = b.addSystemCommand(&.{
+    //             "cat",
+    //         });
+    //         dump_stage1_transpiled_src.addFileArg(stage1_transpiled_src);
+    //         run_step.dependOn(&dump_stage1_transpiled_src.step);
+    //     }
 
-    const run_stage1_compiler = b.addRunArtifact(stage1_compiler);
+    //     const stage1 = b.createModule(.{
+    //         .root_source_file = stage1_transpiled_src,
+    //         .target = target,
+    //         .optimize = optimize,
+    //         // .link_libc = true,
+    //     });
+    //     // stage1.linkSystemLibrary("LLVM-21", .{});
 
-    const transpile_step = b.step("transpile", "run the transpile");
-    transpile_step.dependOn(&run_stage1_compiler.step);
+    //     const stage1_compiler = b.addExecutable(.{
+    //         .name = "ion-stage1",
+    //         .root_module = stage1,
+    //     });
 
-    const repl_stage0_compiler = b.addRunArtifact(stage0_compiler);
-    repl_stage0_compiler.addArg("repl");
-    const repl_step = b.step("repl", "run the compiler in repl mode");
-    repl_step.dependOn(&repl_stage0_compiler.step);
+    //     const run_stage1_compiler = b.addRunArtifact(stage1_compiler);
+
+    //     const transpile_step = b.step("transpile", "run the transpile");
+    //     transpile_step.dependOn(&run_stage1_compiler.step);
+
+    //     const repl_stage0_compiler = b.addRunArtifact(stage0_compiler);
+    //     repl_stage0_compiler.addArg("repl");
+    //     const repl_step = b.step("repl", "run the compiler in repl mode");
+    //     repl_step.dependOn(&repl_stage0_compiler.step);
 }
