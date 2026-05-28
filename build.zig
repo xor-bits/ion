@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     b.default_step.dependOn(&install_stage0_compiler.step);
 
     const run_stage0_compiler = b.addRunArtifact(stage0_compiler);
+    run_stage0_compiler.addArg("build");
     run_stage0_compiler.addFileArg(b.path("./src/stage1/main.ion"));
     run_stage0_compiler.step.addWatchInput(b.path("./src/stage1/main.ion")) catch @panic("OOM");
     const stage1_transpiled_src = run_stage0_compiler.addOutputFileArg("out.zig");
@@ -52,5 +53,12 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_stage1_compiler = b.addRunArtifact(stage1_compiler);
-    run_step.dependOn(&run_stage1_compiler.step);
+
+    const transpile_step = b.step("transpile", "run the transpile");
+    transpile_step.dependOn(&run_stage1_compiler.step);
+
+    const repl_stage0_compiler = b.addRunArtifact(stage0_compiler);
+    repl_stage0_compiler.addArg("repl");
+    const repl_step = b.step("repl", "run the compiler in repl mode");
+    repl_step.dependOn(&repl_stage0_compiler.step);
 }

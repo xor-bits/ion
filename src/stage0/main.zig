@@ -7,6 +7,12 @@ const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
 const Codegen = @import("Codegen.zig");
 
+const Command = enum {
+    @"--help",
+    repl,
+    build,
+};
+
 pub fn main(init: std.process.Init) !u8 {
     const alloc = init.gpa;
     const io = init.io;
@@ -16,9 +22,56 @@ pub fn main(init: std.process.Init) !u8 {
 
     var args = init.minimal.args.iterate();
     defer args.deinit();
+    const self_exe = args.next().?;
 
-    _ = args.next().?;
+    const command_str = args.next() orelse {
+        _ = help(self_exe);
+        return 1;
+    };
+    const command = std.meta.stringToEnum(Command, command_str) orelse {
+        _ = help(self_exe);
+        return 1;
+    };
 
+    return switch (command) {
+        .@"--help" => help(self_exe),
+        .repl => repl(io, alloc),
+        .build => build(io, alloc, &args),
+    };
+}
+
+fn help(
+    self_exe: []const u8,
+) u8 {
+    std.debug.print(
+        \\usage:
+        \\  {s} [command] [options]
+        \\
+        \\commands
+        \\  repl
+        \\  build
+        \\
+        \\options
+        \\  --help
+        \\
+    , .{self_exe});
+    return 0;
+}
+
+fn repl(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+) !u8 {
+    _ = io;
+    _ = alloc;
+    std.debug.panic("TODO", .{});
+}
+
+fn build(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    args: *std.process.Args.Iterator,
+) !u8 {
     const source_path = args.next() orelse {
         std.log.err("expected source file argument", .{});
         return 1;
@@ -82,7 +135,8 @@ pub fn main(init: std.process.Init) !u8 {
     ir_gen.dump();
 
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
-    // vm.verbose = true;
+    vm.mode = .compile;
+    vm.verbose = true;
     // vm.gas = 1000;
     // vm.mode = .eval;
     defer vm.deinit(alloc);

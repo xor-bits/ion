@@ -32,6 +32,18 @@ let main = fn() {
     };
     print v;
 
+    if (false) {
+        // branches that are known to be unreachable at
+        // compile time are not checked (by design (design stolen from Zig))
+        let would_error: bool = "hello";
+    };
+
+    /*
+        multiline
+        comments
+        also work
+    */
+
     // uncomment the next line for a syntax error:
     // $
     // uncomment the next line for an ir-gen error:

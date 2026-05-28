@@ -283,6 +283,7 @@ pub const Instr = union(enum) {
     dbg_name: struct {
         name: Span,
         val: Value,
+        mut: bool,
     },
     /// prints a value at compile time
     dbg_print: struct {
@@ -625,9 +626,10 @@ fn dumpBlock(
                 std.debug.print("dbg_loc(line={}, col={})\n", .{ v.line, v.col });
             },
             .dbg_name => |v| {
-                std.debug.print("dbg_name(name=\"{s}\", val={f})\n", .{
+                std.debug.print("dbg_name(name=\"{s}\", val={f}, mut={})\n", .{
                     v.name.read(self.source()),
                     v.val,
+                    v.mut,
                 });
             },
             .dbg_print => |v| {
@@ -711,6 +713,7 @@ pub fn convertDecl(
         .{ .dbg_name = .{
             .name = decl.ident,
             .val = val,
+            .mut = decl.mut,
         } },
         self.spans()[node_id],
     );
@@ -1063,6 +1066,7 @@ pub fn convertFn(
                 .{ .dbg_name = .{
                     .name = param.ident,
                     .val = val.asValue(),
+                    .mut = false,
                 } },
                 self.spans()[proto_node.params.start + i],
             );

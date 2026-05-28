@@ -23,7 +23,7 @@ pub const Frame = struct {
     registers: std.AutoHashMapUnmanaged(Instr.Id, Register) = .{},
     arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
     node: std.SinglyLinkedList.Node = .{},
-    return_register: Instr.Id = .start,
+    return_register: ?Instr.Id = null,
     return_type: ?Type.Id = null,
     symbol: Span = .{},
     // mode: EvalMode = .compile,
@@ -34,7 +34,7 @@ pub const Frame = struct {
         self.instr = self.block;
         _ = self.arena.reset(.retain_capacity);
         self.registers.clearRetainingCapacity();
-        self.return_register = .start;
+        self.return_register = null;
         self.return_type = null;
         self.symbol = .{};
     }
@@ -106,6 +106,10 @@ pub const Register = struct {
         return .{ .type = proto, .val = .{
             .func = .{ .entry = entry },
         } };
+    }
+
+    fn runtime(t: Type.Id) @This() {
+        return .{ .type = t, .val = .runtime };
     }
 };
 
@@ -692,17 +696,6 @@ fn runOnce(
                 );
             }
 
-            const ip = func_reg.val.func.entry;
-
-            const call_frame = try self.pushFrame(
-                alloc,
-                ip,
-            );
-            call_frame.symbol = func_reg.name;
-            call_frame.return_register = self.ip;
-            call_frame.return_type = proto.func.@"return";
-            // std.debug.print("{s}\n", .{func_reg.name.read(source)});
-
             const args = IrGenerator.Extra.getParams(
                 extras,
                 v.argv,
@@ -714,24 +707,48 @@ fn runOnce(
                 v.argc,
             );
 
-            for (args, 0..) |arg, i| {
-                const passed_arg = try self.get(arg.val);
-                if (passed_arg.type != proto.func.params[i]) {
-                    return self.pushError(
-                        self.ir_gen.parser.node_spans.items[node_ids[i]],
-                        "unexpected function argument type: expected '{f}', got: '{f}'",
-                        .{
-                            proto.func.params[i].print(self),
-                            passed_arg.type.print(self),
-                        },
+            if (self.mode == .eval) {
+                const ip = func_reg.val.func.entry;
+
+                const call_frame = try self.pushFrame(alloc, ip);
+                call_frame.symbol = func_reg.name;
+                call_frame.return_register = self.ip;
+                call_frame.return_type = proto.func.@"return";
+                // std.debug.print("{s}\n", .{func_reg.name.read(source)});
+
+                for (args, 0..) |arg, i| {
+                    const passed_arg = try self.get(arg.val);
+                    if (passed_arg.type != proto.func.params[i]) {
+                        return self.pushError(
+                            self.ir_gen.parser.node_spans.items[node_ids[i]],
+                            "unexpected function argument type: expected '{f}', got: '{f}'",
+                            .{
+                                proto.func.params[i].print(self),
+                                passed_arg.type.print(self),
+                            },
+                        );
+                    }
+                    try self.setIndirect(
+                        alloc,
+                        call_frame,
+                        @enumFromInt(@intFromEnum(ip) + i),
+                        passed_arg,
                     );
                 }
-                try self.setIndirect(
-                    alloc,
-                    call_frame,
-                    @enumFromInt(@intFromEnum(ip) + i),
-                    passed_arg,
-                );
+            } else {
+                for (args, 0..) |arg, i| {
+                    const passed_arg = try self.get(arg.val);
+                    if (passed_arg.type != proto.func.params[i]) {
+                        return self.pushError(
+                            self.ir_gen.parser.node_spans.items[node_ids[i]],
+                            "unexpected function argument type: expected '{f}', got: '{f}'",
+                            .{
+                                proto.func.params[i].print(self),
+                                passed_arg.type.print(self),
+                            },
+                        );
+                    }
+                }
             }
         },
         .unary_op => |v| {
@@ -827,6 +844,32 @@ fn runOnce(
                 alloc,
                 Register.func(proto, frame.instr),
             );
+
+            if (self.mode == .compile) {
+                const proto_type = self.readType(proto);
+                if (proto_type != .func) {
+                    return self.pushError(
+                        self.span(self.ip),
+                        "type '{f}' is not a function prototype",
+                        .{proto.print(self)},
+                    );
+                }
+
+                const call_frame = try self.pushFrame(alloc, frame.instr);
+                call_frame.return_register = null;
+                call_frame.return_type = proto_type.func.@"return";
+                // std.debug.print("{s}\n", .{func_reg.name.read(source)});
+
+                for (proto_type.func.params, 0..) |param, i| {
+                    try self.setIndirect(
+                        alloc,
+                        call_frame,
+                        @enumFromInt(@intFromEnum(frame.instr) + i),
+                        Register.runtime(param),
+                    );
+                }
+            }
+
             frame.instr = v.body_block_end;
         },
         .proto => |v| {
@@ -878,28 +921,37 @@ fn runOnce(
                     );
                 }
             }
-            try self.setIndirect(
-                alloc,
-                self.topFrame(),
-                return_register,
-                break_val,
-            );
+
+            if (return_register) |reg| {
+                try self.setIndirect(
+                    alloc,
+                    self.topFrame(),
+                    reg,
+                    break_val,
+                );
+            }
         },
         .@"continue" => |v| {
             while (self.topFrame().block != v.block) {
                 self.popFrame();
             }
-            const new_top_frame = self.topFrame();
-            new_top_frame.clear();
+            if (self.mode == .eval) {
+                const new_top_frame = self.topFrame();
+                new_top_frame.clear();
+            } else {
+                self.popFrame();
+            }
             // already set by clear: new_top_frame.instr = new_top_frame.block;
         },
         // .dbg_loc => {},
         .dbg_name => |v| {
             var reg = try self.get(v.val);
             reg.name = v.name;
+            if (self.mode == .compile) reg.val = .runtime;
             try self.set(alloc, reg);
         },
         .dbg_print => |v| {
+            if (self.mode == .compile) return;
             const val = try self.get(v.val);
             switch (val.val) {
                 .type => |t| {
@@ -940,29 +992,28 @@ fn runOnce(
             }
         },
         .block => |v| {
-            const block_frame = try self.pushFrame(
-                alloc,
-                frame.instr,
-            );
+            const block_frame = try self.pushFrame(alloc, frame.instr);
             block_frame.return_register = self.ip;
             frame.instr = v.block_end;
         },
         .conditional => |v| {
-            const takes_on_true_branch = try self.getBool(v.boolean);
+            const compile_time_known_branch = try self.getBool(v.boolean);
 
-            if (takes_on_true_branch) {
-                const block_frame = try self.pushFrame(
-                    alloc,
-                    frame.instr,
-                );
-                block_frame.return_register = self.ip;
+            if (compile_time_known_branch) |takes_on_true_branch| {
+                if (takes_on_true_branch) {
+                    const on_true_block_frame = try self.pushFrame(alloc, frame.instr);
+                    on_true_block_frame.return_register = self.ip;
+                } else {
+                    const on_false_block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                    on_false_block_frame.return_register = self.ip;
+                }
             } else {
-                const block_frame = try self.pushFrame(
-                    alloc,
-                    v.on_true_block_end,
-                );
-                block_frame.return_register = self.ip;
+                const on_false_block_frame = try self.pushFrame(alloc, v.on_true_block_end);
+                on_false_block_frame.return_register = frame.instr;
+                const on_true_block_frame = try self.pushFrame(alloc, frame.instr);
+                on_true_block_frame.return_register = self.ip;
             }
+
             frame.instr = v.on_false_block_end;
         },
         else => std.debug.panic("TODO: {t}\n", .{opcode}),
@@ -1067,7 +1118,7 @@ fn getType(
 fn getBool(
     self: *@This(),
     reg: Value,
-) Error!bool {
+) Error!?bool {
     const raw = try self.get(reg);
     return try self.regAsBool(raw);
 }
@@ -1089,7 +1140,7 @@ fn regAsType(
 fn regAsBool(
     self: *@This(),
     reg: Register,
-) Error!bool {
+) Error!?bool {
     if (reg.type != .bool) return {
         return self.pushError(
             self.span(self.ip),
@@ -1097,6 +1148,7 @@ fn regAsBool(
             .{reg.type.print(self)},
         );
     };
+    if (reg.val == .runtime) return null;
     return reg.val.bool;
 }
 
@@ -1352,6 +1404,10 @@ fn cast(
     as: Type.Id,
 ) Error!Register {
     var val = _val;
+
+    if (val.type == as) {
+        return val;
+    }
 
     if (val.type == .undefined) {
         val.type = as;
