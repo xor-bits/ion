@@ -382,9 +382,9 @@ fn next(
                     //
                     // this is to parse 3..4 as a <3> <..> <4> instead of <3.> . <4>
                     const digit_after_dot, _ = self.peekNth(1) orelse break;
-                    if (!std.ascii.isAlphanumeric(digit_after_dot)) break;
+                    if (!std.ascii.isDigit(digit_after_dot)) break;
                     dot_found = true;
-                } else if (!std.ascii.isAlphanumeric(result.@"0")) break;
+                } else if (!std.ascii.isDigit(result.@"0")) break;
                 ch, span = result;
                 self.advance();
             }
@@ -447,7 +447,7 @@ fn peekNth(
 ) ?struct { u8, Span } {
     if (self.cursor + n >= self.source.len) return null;
     return .{
-        self.source[self.cursor],
+        self.source[self.cursor + n],
         Span{ .start = self.cursor + n, .end = self.cursor + n + 1 },
     };
 }
