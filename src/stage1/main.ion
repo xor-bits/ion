@@ -46,8 +46,9 @@ let main = fn() {
 
     // uncomment the next line for a syntax error:
     // $
-    // uncomment the next line for an ir-gen error:
+    // uncomment one of the next 2 lines for an ir-gen error:
     // let error = unknown;
+    // print(x); // `x` is from a closed scope at line 30
     // uncomment one of the next 3 lines for a type error:
     // let n: u32 = "hello";
     // func("hello");
