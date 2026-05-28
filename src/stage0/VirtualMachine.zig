@@ -69,6 +69,14 @@ pub const Register = struct {
         return .{ .type = .undefined, .val = .undefined };
     }
 
+    fn strLit(
+        s: []const u8,
+    ) @This() {
+        return .{ .type = .slice_u8, .val = .{
+            .string = s,
+        } };
+    }
+
     fn intLit(
         i: u64,
     ) @This() {
@@ -374,6 +382,7 @@ pub const PrimitiveValue = union(enum) {
     void,
     bool: bool,
     undefined,
+    runtime,
     u8: u8,
     u16: u16,
     u32: u32,
@@ -652,25 +661,18 @@ fn runOnce(
         opcode,
     });
     switch (opcode) {
-        .str_lit => |v| {
-            const str = v.value.read(source);
-            try self.set(
-                alloc,
-                Register{ .type = .slice_u8, .val = .{ .string = str } },
-            );
-        },
-        .int_lit => |v| {
-            try self.set(
-                alloc,
-                Register.intLit(v.value),
-            );
-        },
-        .float_lit => |v| {
-            try self.set(
-                alloc,
-                Register.floatLit(v.value),
-            );
-        },
+        .str_lit => |v| try self.set(
+            alloc,
+            Register.strLit(v.value.read(source)),
+        ),
+        .int_lit => |v| try self.set(
+            alloc,
+            Register.intLit(v.value),
+        ),
+        .float_lit => |v| try self.set(
+            alloc,
+            Register.floatLit(v.value),
+        ),
         .call => |v| {
             const func_reg = try self.get(v.func);
             const proto = self.readType(func_reg.type);
@@ -908,6 +910,14 @@ fn runOnce(
                 },
                 .undefined => {
                     std.debug.print("undefined\n", .{});
+                },
+                .runtime => {
+                    return self.pushError(
+                        self.span(self.ip),
+                        "cannot print a runtime value at compile time",
+                        .{},
+                    );
+                    // std.debug.print("undefined\n", .{});
                 },
                 inline .bool, .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |p| {
                     std.debug.print("{}\n", .{p});

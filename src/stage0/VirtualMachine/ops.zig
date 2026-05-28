@@ -172,6 +172,14 @@ fn mathOp(
     rhs: Register,
 ) Error!Register {
     if (lhs.type != rhs.type) return Error.Runtime;
+    if (lhs.val == .runtime or rhs.val == .runtime) return .{
+        .type = lhs.type,
+        .val = .runtime,
+    };
+    if (lhs.val == .undefined or rhs.val == .undefined) return .{
+        .type = lhs.type,
+        .val = .undefined,
+    };
     std.debug.assert(std.meta.activeTag(lhs.val) == rhs.val);
     return switch (std.meta.activeTag(lhs.val)) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64 => |v| {
@@ -206,6 +214,14 @@ fn boolOp(
     rhs: Register,
 ) Error!Register {
     if (lhs.type != rhs.type) return Error.Runtime;
+    if (lhs.val == .runtime or rhs.val == .runtime) return .{
+        .type = .bool,
+        .val = .runtime,
+    };
+    if (lhs.val == .undefined or rhs.val == .undefined) return .{
+        .type = .bool,
+        .val = .undefined,
+    };
     std.debug.assert(std.meta.activeTag(lhs.val) == rhs.val);
     return switch (std.meta.activeTag(lhs.val)) {
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |v| {
@@ -225,6 +241,14 @@ fn unaryOp(
     val: Register,
 ) Error!Register {
     return switch (std.meta.activeTag(val.val)) {
+        .runtime => return .{
+            .type = val.type,
+            .val = .runtime,
+        },
+        .undefined => return .{
+            .type = val.type,
+            .val = .undefined,
+        },
         inline .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64 => |v| {
             const t = @tagName(v);
             return .{ .type = val.type, .val = @unionInit(
