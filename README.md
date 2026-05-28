@@ -15,7 +15,6 @@ let main = fn() {
     print("(1 + 4 * 6) * 2 = ");
     // int literals default to isize
     print(double(1 + four * 6));
-    print("\n");
 };
 ```
 
@@ -24,13 +23,27 @@ let main = fn() {
 0.16.x Zig compiler is required
 
 ```bash
-# build the transpiler
-zig build
-# run the transpiler (ion-stage0 <src> <output>)
-./zig-out/bin/ion-stage0 ./src/stage1/main.ion out.zig
-# run the generated Zig code
-zig run -lc out.zig
+# build the compiler
+zig build -Doptimize=ReleaseSafe -Dllvm
+# convert code into IR and run the IR in a VM
+./zig-out/bin/ion-stage0 eval
+./zig-out/bin/ion-stage0 eval in.ion
+# show the tokens before evaluating
+./zig-out/bin/ion-stage0 eval in.ion --dump-tokens
+# show the AST before evaluating
+./zig-out/bin/ion-stage0 eval in.ion --dump-ast
+# show the IR before evaluating
+./zig-out/bin/ion-stage0 eval in.ion --dump-ir
+# show what the VM is doing and print all globals
+./zig-out/bin/ion-stage0 eval in.ion --dump-vm
+# transpile code to zig
+./zig-out/bin/ion-stage0 build in.ion out.zig
+zig run out.zig
+# transpile code to zig and run it using the zig compiler
+./zig-out/bin/ion-stage0 build in.ion out.zig --run
+# more about the cli usage
+./zig-out/bin/ion-stage0 --help
 
-# or everything in one command (-Ddump is optional)
-zig build run -Ddump # -Ddump dumps the generated Zig code
+# src/stage1/main.ion has some example ion code to use
+./zig-out/bin/ion-stage0 build src/stage1/main.ion out.zig --run
 ```
