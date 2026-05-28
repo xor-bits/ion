@@ -14,6 +14,7 @@ const Command = struct {
     dump_ast: bool = false,
     dump_ir: bool = false,
     dump_vm: bool = false,
+    run: bool = false,
     subcmd: ?SubCommand = null,
 
     const Flag = enum {
@@ -22,11 +23,14 @@ const Command = struct {
         @"dump-ast",
         @"dump-ir",
         @"dump-vm",
+        run,
     };
 };
 
 const SubCommand = union(enum) {
-    eval,
+    eval: struct {
+        source_path: ?[]const u8 = null,
+    },
     build: struct {
         source_path: []const u8 = "",
         destin_path: []const u8 = "",
@@ -72,7 +76,7 @@ fn parseCli(
             continue;
         } else if (std.mem.startsWith(u8, arg, "--")) {
             const flag = std.meta.stringToEnum(Command.Flag, arg[2..]) orelse {
-                std.log.err("unknown cli flag '{s}'", .{arg[2..]});
+                std.log.err("unexpected cli flag '{s}'", .{arg[2..]});
                 _ = help(config.self_exe);
                 return null;
             };
@@ -82,10 +86,19 @@ fn parseCli(
                 .@"dump-ast" => config.dump_ast = true,
                 .@"dump-ir" => config.dump_ir = true,
                 .@"dump-vm" => config.dump_vm = true,
+                .run => config.run = true,
             }
             continue;
         } else if (subcmd_found) |subcmd| {
             switch (subcmd) {
+                .eval => switch (nth_regular_arg) {
+                    0 => {
+                        config.subcmd.?.eval.source_path = arg;
+                        nth_regular_arg += 1;
+                        continue;
+                    },
+                    else => {},
+                },
                 .build => switch (nth_regular_arg) {
                     0 => {
                         config.subcmd.?.build.source_path = arg;
@@ -99,13 +112,12 @@ fn parseCli(
                     },
                     else => {},
                 },
-                else => {},
             }
         } else if (std.meta.stringToEnum(SubCommand.Tag, arg)) |subcmd| {
             subcmd_found = subcmd;
             switch (subcmd) {
                 .build => config.subcmd = .{ .build = .{} },
-                .eval => config.subcmd = .eval,
+                .eval => config.subcmd = .{ .eval = .{} },
             }
             continue;
         }
@@ -120,15 +132,21 @@ fn parseCli(
         return null;
     }
 
-    if (subcmd_found == .build and nth_regular_arg == 0) {
+    if (subcmd_found == .build and nth_regular_arg == 0 and !config.help) {
         std.log.err("missing [source_path] argument", .{});
-        _ = help(config.self_exe);
+        _ = help_build(config.self_exe);
         return null;
     }
 
-    if (subcmd_found == .build and nth_regular_arg == 1) {
+    if (subcmd_found == .build and nth_regular_arg == 1 and !config.help) {
         std.log.err("missing [output_path] argument", .{});
-        _ = help(config.self_exe);
+        _ = help_build(config.self_exe);
+        return null;
+    }
+
+    if (subcmd_found != .build and config.run) {
+        std.log.err("unexpected cli flag 'run'", .{});
+        _ = help_build(config.self_exe);
         return null;
     }
 
@@ -162,7 +180,7 @@ fn help_eval(
 ) u8 {
     std.debug.print(
         \\usage:
-        \\  {s} eval [options]
+        \\  {s} eval [source_path] [options]
         \\
         \\options
         \\  --help              : show this
@@ -180,7 +198,7 @@ fn help_build(
 ) u8 {
     std.debug.print(
         \\usage:
-        \\  {s} build [source_path] [output_path] [options]
+        \\  {s} build source_path output_path [options]
         \\
         \\options
         \\  --help              : show this
@@ -188,6 +206,7 @@ fn help_build(
         \\  --dump-ast          : print ast to stderr
         \\  --dump-ir           : print ir to stderr
         \\  --dump-vm           : print vm control flow to stderr
+        \\  --run               : run the output zig code
         \\
     , .{self_exe});
     return 0;
@@ -202,17 +221,29 @@ fn eval(
         return help_eval(cli.self_exe);
     }
 
-    std.debug.print("write your program here, evaluate with Ctrl+D\n", .{});
+    var source: []const u8 = undefined;
 
-    var stdin_buffer: [0x200]u8 = undefined;
-    const stdin = std.Io.File.stdin();
-    var stdin_reader = stdin.reader(io, &stdin_buffer);
-    const source = try stdin_reader.interface.allocRemaining(
-        alloc,
-        .limited64(std.math.maxInt(u32)),
-    );
+    if (cli.subcmd.?.eval.source_path) |source_path| {
+        const cwd = std.Io.Dir.cwd();
+
+        const source_file = try cwd.openFile(io, source_path, .{});
+        defer source_file.close(io);
+
+        var source_buffer: [0x1000]u8 = undefined;
+        var source_reader = source_file.reader(io, &source_buffer);
+        source = try source_reader.interface.allocRemaining(alloc, .limited64(std.math.maxInt(u32)));
+    } else {
+        std.debug.print("write your program here, evaluate with Ctrl+D\n", .{});
+
+        var stdin_buffer: [0x200]u8 = undefined;
+        const stdin = std.Io.File.stdin();
+        var stdin_reader = stdin.reader(io, &stdin_buffer);
+        source = try stdin_reader.interface.allocRemaining(
+            alloc,
+            .limited64(std.math.maxInt(u32)),
+        );
+    }
     defer alloc.free(source);
-
     std.debug.print("\n", .{});
 
     // stdin.readPositionalAll(io, buffer: []u8, offset: u64)
@@ -339,7 +370,7 @@ fn build(
     var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
     vm.verbose = cli.dump_vm;
     // vm.gas = 1000;
-    vm.mode = .eval;
+    vm.mode = .compile;
     defer vm.deinit(alloc);
     vm.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -370,6 +401,19 @@ fn build(
     };
 
     try output_writer.flush();
+
+    if (cli.run) {
+        var zig_compiler = try std.process.spawn(io, .{
+            .argv = &.{
+                "zig",
+                "run",
+                destin_path,
+            },
+        });
+        _ = try zig_compiler.wait(io);
+    }
+    // std.process.Child.Cwd
+
     return 0;
 }
 
