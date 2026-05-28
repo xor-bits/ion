@@ -403,6 +403,61 @@ pub const PrimitiveValue = union(enum) {
     func: Function,
     // TODO: will be a proper pointer later
     string: []const u8,
+
+    pub const Printer = struct {
+        self: PrimitiveValue,
+        vm: *const VirtualMachine,
+
+        pub fn format(
+            self: @This(),
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
+            try self.self.write(self.vm, writer);
+        }
+    };
+
+    fn write(
+        self: @This(),
+        vm: *const VirtualMachine,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (self) {
+            .type => |t| {
+                try writer.print("{f}", .{t.print(vm)});
+            },
+            .void => {
+                try writer.print("void", .{});
+            },
+            .undefined => {
+                try writer.print("undefined", .{});
+            },
+            .runtime => {
+                try writer.print("runtime", .{});
+            },
+            inline .bool, .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |p| {
+                try writer.print("{}", .{p});
+            },
+            .pointer => |p| {
+                try writer.print("0x{x}", .{@as(u64, @bitCast(p))});
+            },
+            .slice => {
+                try writer.print("slice", .{});
+            },
+            .func => |p| {
+                try writer.print("{f}", .{p.entry});
+            },
+            .string => |s| {
+                try writer.print("{s}", .{s});
+            },
+        }
+    }
+
+    pub fn print(
+        self: @This(),
+        vm: *const VirtualMachine,
+    ) Printer {
+        return .{ .self = self, .vm = vm };
+    }
 };
 
 pub const Pointer = extern struct {
@@ -628,10 +683,20 @@ pub fn dump(
     const frame = self.topFrameConst();
     var it = frame.registers.iterator();
     while (it.next()) |reg| {
-        std.debug.print("%{} = {any}\n", .{
-            @intFromEnum(reg.key_ptr.*),
-            reg.value_ptr.*,
-        });
+        if (reg.value_ptr.name.len() != 0) {
+            std.debug.print("%{} ({s}): {f} = {f}\n", .{
+                @intFromEnum(reg.key_ptr.*),
+                reg.value_ptr.name.read(self.ir_gen.parser.tokenizer.source),
+                reg.value_ptr.type.print(self),
+                reg.value_ptr.val.print(self),
+            });
+        } else {
+            std.debug.print("%{}: {f} = {f}\n", .{
+                @intFromEnum(reg.key_ptr.*),
+                reg.value_ptr.type.print(self),
+                reg.value_ptr.val.print(self),
+            });
+        }
     }
 }
 
@@ -961,44 +1026,7 @@ fn runOnce(
         .dbg_print => |v| {
             const val = try self.get(v.val);
             if (self.mode == .compile) return;
-
-            switch (val.val) {
-                .type => |t| {
-                    std.debug.print("{f}\n", .{t.print(self)});
-                },
-                .void => {
-                    std.debug.print("void\n", .{});
-                },
-                .undefined => {
-                    std.debug.print("undefined\n", .{});
-                },
-                .runtime => {
-                    return self.pushError(
-                        self.span(self.ip),
-                        "cannot print a runtime value at compile time",
-                        .{},
-                    );
-                    // std.debug.print("undefined\n", .{});
-                },
-                inline .bool, .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .f32, .f64 => |p| {
-                    std.debug.print("{}\n", .{p});
-                },
-                .pointer => |p| {
-                    std.debug.print("0x{x}\n", .{@as(u64, @bitCast(p))});
-                },
-                .slice => {
-                    // val.type == .slice_u8;
-                    // p.ptr;
-                    // std.debug.print(".{}", .{});
-                    std.debug.panic("todo\n", .{});
-                },
-                .func => |p| {
-                    std.debug.print("{f}\n", .{p.entry});
-                },
-                .string => |s| {
-                    std.debug.print("{s}\n", .{s});
-                },
-            }
+            std.debug.print("{f}\n", .{val.val.print(self)});
         },
         .block => |v| {
             const block_frame = try self.pushFrame(
