@@ -347,14 +347,9 @@ fn next(
             }
         },
         .str_lit => {
-            while (true) {
-                ch, span = self.popIf(struct {
-                    fn pred(_ch: u8) bool {
-                        return _ch != '"';
-                    }
-                }.pred) orelse break;
+            while (ch != '"') {
+                ch, span = self.pop() orelse break;
             }
-            ch, span = self.pop() orelse return null;
 
             return .{
                 .token = Token.str_lit,
