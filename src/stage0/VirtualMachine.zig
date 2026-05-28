@@ -463,6 +463,8 @@ type_infos: std.MultiArrayList(TypeInfo) = .empty,
 type_map: std.HashMapUnmanaged(Type, Type.Id, Type.Context, 80) = .empty,
 arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 errors: std.ArrayList(ErrorMsg) = .empty,
+error_alloc: std.mem.Allocator = undefined,
+ip: Instr.Id = .start,
 
 /// fuel for instruction, null for unlimited
 gas: ?usize = null,
@@ -545,14 +547,13 @@ pub fn printErrors(
 
 pub fn pushError(
     self: *@This(),
-    alloc: std.mem.Allocator,
     s: Span,
     comptime fmt: []const u8,
     args: anytype,
 ) Error {
     @branchHint(.cold);
-    const message = try std.fmt.allocPrint(alloc, fmt, args);
-    try self.errors.append(alloc, .{
+    const message = try std.fmt.allocPrint(self.error_alloc, fmt, args);
+    try self.errors.append(self.error_alloc, .{
         .message = message,
         .span = s,
     });
@@ -563,27 +564,29 @@ pub fn run(
     self: *@This(),
     alloc: std.mem.Allocator,
 ) Error!void {
+    self.error_alloc = alloc;
+
     _ = try self.pushFrame(alloc, .start);
 
     const instrs = self.ir_gen.instrs.slice();
     const extras = self.ir_gen.extras.items;
     const source = self.ir_gen.parser.tokenizer.source;
 
-    try self.addCommonType(alloc, .start, .type, .type);
-    try self.addCommonType(alloc, .start, .void, .void);
-    try self.addCommonType(alloc, .start, .bool, .bool);
-    try self.addCommonType(alloc, .start, .undefined, .undefined);
-    try self.addCommonType(alloc, .start, intType(.unsigned, .@"8"), .u8);
-    try self.addCommonType(alloc, .start, intType(.unsigned, .@"16"), .u16);
-    try self.addCommonType(alloc, .start, intType(.unsigned, .@"32"), .u32);
-    try self.addCommonType(alloc, .start, intType(.unsigned, .@"64"), .u64);
-    try self.addCommonType(alloc, .start, intType(.signed, .@"8"), .i8);
-    try self.addCommonType(alloc, .start, intType(.signed, .@"16"), .i16);
-    try self.addCommonType(alloc, .start, intType(.signed, .@"32"), .i32);
-    try self.addCommonType(alloc, .start, intType(.signed, .@"64"), .i64);
-    try self.addCommonType(alloc, .start, floatType(.@"32"), .f32);
-    try self.addCommonType(alloc, .start, floatType(.@"64"), .f64);
-    try self.addCommonType(alloc, .start, .{ .slice = .{
+    try self.addCommonType(alloc, .type, .type);
+    try self.addCommonType(alloc, .void, .void);
+    try self.addCommonType(alloc, .bool, .bool);
+    try self.addCommonType(alloc, .undefined, .undefined);
+    try self.addCommonType(alloc, intType(.unsigned, .@"8"), .u8);
+    try self.addCommonType(alloc, intType(.unsigned, .@"16"), .u16);
+    try self.addCommonType(alloc, intType(.unsigned, .@"32"), .u32);
+    try self.addCommonType(alloc, intType(.unsigned, .@"64"), .u64);
+    try self.addCommonType(alloc, intType(.signed, .@"8"), .i8);
+    try self.addCommonType(alloc, intType(.signed, .@"16"), .i16);
+    try self.addCommonType(alloc, intType(.signed, .@"32"), .i32);
+    try self.addCommonType(alloc, intType(.signed, .@"64"), .i64);
+    try self.addCommonType(alloc, floatType(.@"32"), .f32);
+    try self.addCommonType(alloc, floatType(.@"64"), .f64);
+    try self.addCommonType(alloc, .{ .slice = .{
         .mut = false,
         .child = .u8,
     } }, .slice_u8);
@@ -632,20 +635,20 @@ fn runOnce(
     }
 
     const frame = self.topFrame();
+    self.ip = frame.instr;
 
-    const instr_now = frame.instr;
-    const opcode = fetchInstr(instrs, instr_now) orelse {
+    const opcode = fetchInstr(instrs, self.ip) orelse {
         @branchHint(.cold);
         return error.OutOfGas;
     };
-    frame.instr = @enumFromInt(@intFromEnum(instr_now) + 1);
+    frame.instr = @enumFromInt(@intFromEnum(self.ip) + 1);
 
     if (self.verbose) std.debug.print("exec {f} ({t})\n", .{
-        instr_now,
+        self.ip,
         opcode,
     });
     errdefer std.debug.print("error at {f} ({t})\n", .{
-        instr_now,
+        self.ip,
         opcode,
     });
     switch (opcode) {
@@ -653,39 +656,27 @@ fn runOnce(
             const str = v.value.read(source);
             try self.set(
                 alloc,
-                frame,
-                instr_now,
                 Register{ .type = .slice_u8, .val = .{ .string = str } },
             );
         },
         .int_lit => |v| {
             try self.set(
                 alloc,
-                frame,
-                instr_now,
                 Register.intLit(v.value),
             );
         },
         .float_lit => |v| {
             try self.set(
                 alloc,
-                frame,
-                instr_now,
                 Register.floatLit(v.value),
             );
         },
         .call => |v| {
-            const func_reg = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.func,
-            );
+            const func_reg = try self.get(v.func);
             const proto = self.readType(func_reg.type);
             if (proto != .func) {
                 return self.pushError(
-                    alloc,
-                    self.span(instr_now),
+                    self.span(self.ip),
                     "'{f}' is not callable",
                     .{func_reg.type.print(self)},
                 );
@@ -693,8 +684,7 @@ fn runOnce(
 
             if (v.argc != proto.func.params.len) {
                 return self.pushError(
-                    alloc,
-                    self.span(instr_now),
+                    self.span(self.ip),
                     "incorrect argument count: expected {}, found {}",
                     .{ proto.func.params.len, v.argc },
                 );
@@ -707,7 +697,7 @@ fn runOnce(
                 ip,
             );
             call_frame.symbol = func_reg.name;
-            call_frame.return_register = instr_now;
+            call_frame.return_register = self.ip;
             call_frame.return_type = proto.func.@"return";
             // std.debug.print("{s}\n", .{func_reg.name.read(source)});
 
@@ -723,15 +713,9 @@ fn runOnce(
             );
 
             for (args, 0..) |arg, i| {
-                const passed_arg = try self.get(
-                    alloc,
-                    instr_now,
-                    frame,
-                    arg.val,
-                );
+                const passed_arg = try self.get(arg.val);
                 if (passed_arg.type != proto.func.params[i]) {
                     return self.pushError(
-                        alloc,
                         self.ir_gen.parser.node_spans.items[node_ids[i]],
                         "unexpected function argument type: expected '{f}', got: '{f}'",
                         .{
@@ -740,7 +724,7 @@ fn runOnce(
                         },
                     );
                 }
-                try self.set(
+                try self.setIndirect(
                     alloc,
                     call_frame,
                     @enumFromInt(@intFromEnum(ip) + i),
@@ -749,12 +733,7 @@ fn runOnce(
             }
         },
         .unary_op => |v| {
-            const val: Register = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.value,
-            );
+            const val: Register = try self.get(v.value);
             errdefer {
                 std.debug.print("val = {f}; {any}, op = {f}\n", .{
                     val.type.print(self),
@@ -763,21 +742,21 @@ fn runOnce(
                 });
             }
             const dst: Register = switch (v.op) {
-                .slice => Register.ty(try self.resolveType(alloc, instr_now, .{ .slice = .{
+                .slice => Register.ty(try self.resolveType(alloc, .{ .slice = .{
                     .mut = false,
-                    .child = try self.regAsType(alloc, instr_now, val),
+                    .child = try self.regAsType(val),
                 } })),
-                .slice_mut => Register.ty(try self.resolveType(alloc, instr_now, .{ .slice = .{
+                .slice_mut => Register.ty(try self.resolveType(alloc, .{ .slice = .{
                     .mut = true,
-                    .child = try self.regAsType(alloc, instr_now, val),
+                    .child = try self.regAsType(val),
                 } })),
-                .pointer => Register.ty(try self.resolveType(alloc, instr_now, .{ .pointer = .{
+                .pointer => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
                     .mut = false,
-                    .child = try self.regAsType(alloc, instr_now, val),
+                    .child = try self.regAsType(val),
                 } })),
-                .pointer_mut => Register.ty(try self.resolveType(alloc, instr_now, .{ .pointer = .{
+                .pointer_mut => Register.ty(try self.resolveType(alloc, .{ .pointer = .{
                     .mut = true,
-                    .child = try self.regAsType(alloc, instr_now, val),
+                    .child = try self.regAsType(val),
                 } })),
                 .address, .address_mut => {
                     @panic("todo");
@@ -788,34 +767,18 @@ fn runOnce(
                 inline else => |op| b: {
                     break :b @field(ops, @tagName(op))(val) catch {
                         return self.pushError(
-                            alloc,
-                            self.span(instr_now),
+                            self.span(self.ip),
                             "unary op '{f}' not supported for '{f}'",
                             .{ op, val.type.print(self) },
                         );
                     };
                 },
             };
-            try self.set(
-                alloc,
-                frame,
-                instr_now,
-                dst,
-            );
+            try self.set(alloc, dst);
         },
         .binary_op => |v| {
-            const lhs: Register = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.lhs,
-            );
-            const rhs: Register = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.rhs,
-            );
+            const lhs: Register = try self.get(v.lhs);
+            const rhs: Register = try self.get(v.rhs);
             errdefer {
                 std.debug.print("lhs = {f}; {any}, rhs = {f}; {any}, op = {f}\n", .{
                     lhs.type.print(self),
@@ -827,64 +790,39 @@ fn runOnce(
             }
             const dst: Register = switch (v.op) {
                 .as => try self.cast(
-                    alloc,
-                    instr_now,
                     lhs,
-                    try self.regAsType(alloc, instr_now, rhs),
+                    try self.regAsType(rhs),
                 ),
                 inline else => |op| b: {
                     break :b @field(ops, @tagName(op))(lhs, rhs) catch {
                         return self.pushError(
-                            alloc,
-                            self.span(instr_now),
+                            self.span(self.ip),
                             "binary op '{f}' not supported for '{f}' and '{f}'",
                             .{ op, lhs.type.print(self), rhs.type.print(self) },
                         );
                     };
                 },
             };
-            try self.set(
-                alloc,
-                frame,
-                instr_now,
-                dst,
-            );
+            try self.set(alloc, dst);
         },
         // .array => {},
         // .alloca => {},
         .write => |v| {
-            const target = try self.getPtr(
-                alloc,
-                instr_now,
-                frame,
-                v.target.asIndex() orelse {
-                    return self.pushError(
-                        alloc,
-                        self.span(instr_now),
-                        "attempt to write to an rvalue",
-                        .{},
-                    );
-                },
-            );
-            target.* = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.val,
-            );
+            const target_reg = v.target.asIndex() orelse {
+                return self.pushError(
+                    self.span(self.ip),
+                    "attempt to write to an rvalue",
+                    .{},
+                );
+            };
+            const target = try self.getPtr(target_reg);
+            target.* = try self.get(v.val);
         },
         // .decl => {},
         .func => |v| {
-            const proto = try self.getType(
-                alloc,
-                instr_now,
-                frame,
-                v.proto,
-            );
+            const proto = try self.getType(v.proto);
             try self.set(
                 alloc,
-                frame,
-                instr_now,
                 Register.func(proto, frame.instr),
             );
             frame.instr = v.body_block_end;
@@ -900,47 +838,26 @@ fn runOnce(
 
             for (params, param_types) |_param, *param_type| {
                 const param: IrGenerator.Extra.Param = @bitCast(_param);
-                param_type.* = try self.getType(
-                    alloc,
-                    instr_now,
-                    frame,
-                    param.val,
-                );
+                param_type.* = try self.getType(param.val);
             }
-            const return_type = try self.getType(
-                alloc,
-                instr_now,
-                frame,
-                proto.return_type,
-            );
+            const return_type = try self.getType(proto.return_type);
 
             const proto_type = try self.resolveType(
                 alloc,
-                instr_now,
                 .{ .func = .{
                     .@"extern" = false,
                     .params = param_types,
                     .@"return" = return_type,
                 } },
             );
-            try self.set(
-                alloc,
-                frame,
-                instr_now,
-                Register.ty(proto_type),
-            );
+            try self.set(alloc, Register.ty(proto_type));
         },
         .param => {
-            // const p = try get(frame, instr_now.asValue());
+            // const p = try get(frame, self.ip.asValue());
             // std.debug.print("{any}\n", .{p.val});
         },
         .@"break" => |v| {
-            const break_val = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.val,
-            );
+            const break_val = try self.get(v.val);
 
             while (self.topFrame().block != v.block) {
                 self.popFrame();
@@ -953,14 +870,13 @@ fn runOnce(
             if (return_type) |t| {
                 if (break_val.type != t) {
                     return self.pushError(
-                        alloc,
-                        self.span(instr_now),
+                        self.span(self.ip),
                         "unexpected type: expected '{f}', found: '{f}'",
                         .{ t.print(self), break_val.type.print(self) },
                     );
                 }
             }
-            try self.set(
+            try self.setIndirect(
                 alloc,
                 self.topFrame(),
                 return_register,
@@ -977,27 +893,12 @@ fn runOnce(
         },
         // .dbg_loc => {},
         .dbg_name => |v| {
-            var reg = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.val,
-            );
+            var reg = try self.get(v.val);
             reg.name = v.name;
-            try self.set(
-                alloc,
-                frame,
-                instr_now,
-                reg,
-            );
+            try self.set(alloc, reg);
         },
         .dbg_print => |v| {
-            const val = try self.get(
-                alloc,
-                instr_now,
-                frame,
-                v.val,
-            );
+            const val = try self.get(v.val);
             switch (val.val) {
                 .type => |t| {
                     std.debug.print("{f}\n", .{t.print(self)});
@@ -1033,29 +934,24 @@ fn runOnce(
                 alloc,
                 frame.instr,
             );
-            block_frame.return_register = instr_now;
+            block_frame.return_register = self.ip;
             frame.instr = v.block_end;
         },
         .conditional => |v| {
-            const takes_on_true_branch = try self.getBool(
-                alloc,
-                instr_now,
-                frame,
-                v.boolean,
-            );
+            const takes_on_true_branch = try self.getBool(v.boolean);
 
             if (takes_on_true_branch) {
                 const block_frame = try self.pushFrame(
                     alloc,
                     frame.instr,
                 );
-                block_frame.return_register = instr_now;
+                block_frame.return_register = self.ip;
             } else {
                 const block_frame = try self.pushFrame(
                     alloc,
                     v.on_true_block_end,
                 );
-                block_frame.return_register = instr_now;
+                block_frame.return_register = self.ip;
             }
             frame.instr = v.on_false_block_end;
         },
@@ -1064,7 +960,7 @@ fn runOnce(
 }
 
 fn span(
-    self: *@This(),
+    self: *const @This(),
     instr: Instr.Id,
 ) Span {
     return self.ir_gen.instr_spans.items[@intFromEnum(instr)];
@@ -1073,24 +969,34 @@ fn span(
 fn set(
     self: *@This(),
     alloc: std.mem.Allocator,
+    val: Register,
+) Error!void {
+    return try self.setIndirect(
+        alloc,
+        self.topFrame(),
+        self.ip,
+        val,
+    );
+}
+
+fn setIndirect(
+    self: *@This(),
+    alloc: std.mem.Allocator,
     frame: *Frame,
     reg: Instr.Id,
     val: Register,
 ) Error!void {
-    if (self.verbose) std.debug.print("set %{}\n", .{@intFromEnum(reg)});
+    if (self.verbose) std.debug.print("set %{}\n", .{@intFromEnum(self.ip)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
 fn get(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
-    _frame: *Frame,
     reg: Value,
 ) Error!Register {
     if (self.verbose) std.debug.print("get {f}\n", .{reg});
 
-    var frame = _frame;
+    var frame = self.topFrame();
     const idx = reg.asIndex() orelse {
         return builtin_registers[@intFromEnum(reg)];
     };
@@ -1105,8 +1011,7 @@ fn get(
         // FIXME: handle captures properly
         const next = frame.node.next orelse {
             return self.pushError(
-                alloc,
-                self.span(instr),
+                self.span(self.ip),
                 "internal error: register not found",
                 .{},
             );
@@ -1117,14 +1022,11 @@ fn get(
 
 fn getPtr(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
-    _frame: *Frame,
     reg: Instr.Id,
 ) Error!*Register {
     if (self.verbose) std.debug.print("getPtr {f}\n", .{reg});
 
-    var frame = _frame;
+    var frame = self.topFrame();
     while (true) {
         if (frame.registers.getPtr(reg)) |found| {
             return found;
@@ -1135,8 +1037,7 @@ fn getPtr(
         // FIXME: handle captures properly
         const next = frame.node.next orelse {
             return self.pushError(
-                alloc,
-                self.span(instr),
+                self.span(self.ip),
                 "internal error: register not found",
                 .{},
             );
@@ -1147,36 +1048,27 @@ fn getPtr(
 
 fn getType(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
-    frame: *Frame,
     reg: Value,
 ) Error!Type.Id {
-    const raw = try self.get(alloc, instr, frame, reg);
-    return try self.regAsType(alloc, instr, raw);
+    const raw = try self.get(reg);
+    return try self.regAsType(raw);
 }
 
 fn getBool(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
-    frame: *Frame,
     reg: Value,
 ) Error!bool {
-    const raw = try self.get(alloc, instr, frame, reg);
-    return try self.regAsBool(alloc, instr, raw);
+    const raw = try self.get(reg);
+    return try self.regAsBool(raw);
 }
 
 fn regAsType(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
     reg: Register,
 ) Error!Type.Id {
     if (reg.type != .type) return {
         return self.pushError(
-            alloc,
-            self.span(instr),
+            self.span(self.ip),
             "unexpected type: expected 'type', found: '{f}'",
             .{reg.type.print(self)},
         );
@@ -1186,14 +1078,11 @@ fn regAsType(
 
 fn regAsBool(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
     reg: Register,
 ) Error!bool {
     if (reg.type != .bool) return {
         return self.pushError(
-            alloc,
-            self.span(instr),
+            self.span(self.ip),
             "unexpected type: expected 'bool', found: '{f}'",
             .{reg.type.print(self)},
         );
@@ -1347,11 +1236,10 @@ fn fetchInstr(
 fn addCommonType(
     self: *@This(),
     alloc: std.mem.Allocator,
-    instr: Instr.Id,
     ty: Type,
     expected_ty_id: Type.Id,
 ) Error!void {
-    const actual_ty_id = try self.resolveType(alloc, instr, ty);
+    const actual_ty_id = try self.resolveType(alloc, ty);
     std.debug.assert(expected_ty_id == actual_ty_id);
 }
 
@@ -1386,7 +1274,6 @@ fn intSize(comptime T: type) IntSize {
 fn resolveType(
     self: *@This(),
     alloc: std.mem.Allocator,
-    instr: Instr.Id,
     _ty: Type,
 ) Error!Type.Id {
     var ty = _ty;
@@ -1413,8 +1300,7 @@ fn resolveType(
             const child = self.readTypeInfo(v.child);
             break :b child.repeat(v.len) orelse {
                 return self.pushError(
-                    alloc,
-                    self.span(instr),
+                    self.span(self.ip),
                     "type too large",
                     .{},
                 );
@@ -1452,8 +1338,6 @@ fn readTypeInfo(
 
 fn cast(
     self: *@This(),
-    alloc: std.mem.Allocator,
-    instr: Instr.Id,
     _val: Register,
     as: Type.Id,
 ) Error!Register {
@@ -1483,8 +1367,7 @@ fn cast(
     }
 
     return self.pushError(
-        alloc,
-        self.span(instr),
+        self.span(self.ip),
         "cannot cast '{f}' to '{f}'",
         .{ val.type.print(self), as.print(self) },
     );
