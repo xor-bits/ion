@@ -12,7 +12,41 @@ const log = std.log.scoped(.irgen);
 
 //
 
-pub const Value = enum(u32) {
+pub const Value = struct {
+    val: RValue,
+    /// l-values are locators, they are stored as
+    /// pointers and are dereferenced automagically
+    is_locator: bool = false,
+
+    pub fn assumeLValue(
+        self: Value,
+    ) RValue {
+        std.debug.assert(self.is_locator);
+        return self.val;
+    }
+
+    pub fn assumeRValue(
+        self: Value,
+    ) RValue {
+        std.debug.assert(!self.is_locator);
+        return self.val;
+    }
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        if (self.is_locator) {
+            try writer.writeAll("*(");
+        }
+        try self.val.format(writer);
+        if (self.is_locator) {
+            try writer.writeAll(")");
+        }
+    }
+};
+
+pub const RValue = enum(u32) {
     type_type,
     void_type,
     bool_type,
@@ -43,12 +77,30 @@ pub const Value = enum(u32) {
     undefined,
     _,
 
-    pub const builtin_count = @intFromEnum(Value.undefined) + 1;
+    pub const builtin_count = @intFromEnum(RValue.undefined) + 1;
 
     pub fn asIndex(self: @This()) ?Instr.Id {
         return switch (self) {
             _ => @enumFromInt(@intFromEnum(self) - builtin_count),
             else => null,
+        };
+    }
+
+    pub fn rval(
+        self: RValue,
+    ) Value {
+        return .{
+            .val = self,
+            .is_locator = false,
+        };
+    }
+
+    pub fn lval(
+        self: RValue,
+    ) Value {
+        return .{
+            .val = self,
+            .is_locator = true,
         };
     }
 
@@ -177,14 +229,14 @@ pub const Extra = enum(u32) {
     }
 
     pub const Proto = extern struct {
-        return_type: Value,
+        return_type: RValue,
         /// number of `Param` following this
         /// `Proto` in the `extras` array
         param_count: u32,
     };
 
     pub const Param = extern struct {
-        val: Value,
+        val: RValue,
     };
 };
 
@@ -195,8 +247,8 @@ pub const Instr = union(enum) {
 
         pub fn asValue(
             self: @This(),
-        ) Value {
-            return @enumFromInt(@intFromEnum(self) + Value.builtin_count);
+        ) RValue {
+            return @enumFromInt(@intFromEnum(self) + RValue.builtin_count);
         }
 
         pub fn format(
@@ -220,40 +272,47 @@ pub const Instr = union(enum) {
     //     builtin: BuiltinVariable,
     // },
     call: struct {
-        func: Value,
+        func: RValue,
         argv: Extra,
         argc: u32,
     },
     unary_op: struct {
-        value: Value,
+        value: RValue,
         op: UnaryOp,
     },
     binary_op: struct {
-        lhs: Value,
-        rhs: Value,
+        lhs: RValue,
+        rhs: RValue,
         op: BinaryOp,
     },
     array: struct {
-        len: Value,
-        child: Value,
+        len: RValue,
+        child: RValue,
+    },
+    typeof: struct {
+        val: RValue,
     },
     alloca: struct {
-        ty: Value,
+        ty: RValue,
+        init: RValue,
+        mut: bool,
     },
-    // FIXME: temporary instruction until pointers are supported
-    write: struct {
-        target: Value,
-        val: Value,
+    load: struct {
+        pointer: RValue,
     },
-    /// creates a new function or a global
-    /// only usable in a struct
-    decl: struct {
-        name: Span,
-        block_end: Instr.Id,
+    store: struct {
+        pointer: RValue,
+        val: RValue,
     },
+    // /// creates a new function or a global
+    // /// only usable in a struct
+    // decl: struct {
+    //     name: Span,
+    //     block_end: Instr.Id,
+    // },
     /// creates a new anonymous function
     func: struct {
-        proto: Value,
+        proto: RValue,
         body_block_end: Instr.Id,
     },
     /// creates a new function type
@@ -268,7 +327,7 @@ pub const Instr = union(enum) {
     /// in code: returns from a block with a value
     @"break": struct {
         block: Instr.Id,
-        val: Value,
+        val: RValue,
     },
     /// loops back to the start of a block in code
     @"continue": struct {
@@ -282,19 +341,19 @@ pub const Instr = union(enum) {
     /// tells which source variable name the value is from
     dbg_name: struct {
         name: Span,
-        val: Value,
+        val: RValue,
         mut: bool,
     },
     /// prints a value at compile time
     dbg_print: struct {
-        val: Value,
+        val: RValue,
     },
     /// a block of instructions which can return with a value
     block: struct {
         block_end: Instr.Id,
     },
     conditional: struct {
-        boolean: Value,
+        boolean: RValue,
         on_true_block_end: Instr.Id,
         on_false_block_end: Instr.Id,
     },
@@ -330,7 +389,7 @@ extras: std.ArrayList(u32) = .empty,
 instr_spans: std.ArrayList(Span) = .empty,
 errors: std.ArrayList(ErrorMsg) = .empty,
 symbols: Symbols = .{},
-main: Value = .undefined,
+main: Value = RValue.undefined.lval(),
 // builder: Builder = .{},
 
 // builder: Builder = .{},
@@ -431,6 +490,367 @@ fn nextInstr(
     return @enumFromInt(self.instrs.len);
 }
 
+fn pushInstrStrLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: Span,
+    span: Span,
+) Error!Value {
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .str_lit = .{
+            .value = value,
+        } },
+        span,
+    );
+}
+
+fn pushInstrIntLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: u64,
+    span: Span,
+) Error!Value {
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .int_lit = .{
+            .value = value,
+        } },
+        span,
+    );
+}
+
+fn pushInstrFloatLit(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: f64,
+    span: Span,
+) Error!Value {
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .float_lit = .{
+            .value = value,
+        } },
+        span,
+    );
+}
+
+fn pushInstrCall(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    func: Value,
+    argv: Extra,
+    argc: u32,
+    span: Span,
+) Error!Value {
+    const func_rval = try self.loadRValue(
+        alloc,
+        func,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .call = .{
+            .func = func_rval,
+            .argv = argv,
+            .argc = argc,
+        } },
+        span,
+    );
+}
+
+fn pushInstrUnaryOp(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    value: Value,
+    op: UnaryOp,
+    span: Span,
+) Error!Value {
+    const rval = try self.loadRValue(
+        alloc,
+        value,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .unary_op = .{
+            .value = rval,
+            .op = op,
+        } },
+        span,
+    );
+}
+
+fn pushInstrBinaryOp(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    lhs: Value,
+    rhs: Value,
+    op: BinaryOp,
+    span: Span,
+) Error!Value {
+    const lhs_rval = try self.loadRValue(
+        alloc,
+        lhs,
+        span,
+    );
+    const rhs_rval = try self.loadRValue(
+        alloc,
+        rhs,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .binary_op = .{
+            .lhs = lhs_rval,
+            .rhs = rhs_rval,
+            .op = op,
+        } },
+        span,
+    );
+}
+
+fn pushInstrArray(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    len: Value,
+    child: Value,
+    span: Span,
+) Error!Value {
+    const len_rval = try self.loadRValue(
+        alloc,
+        len,
+        span,
+    );
+    const child_rval = try self.loadRValue(
+        alloc,
+        child,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .array = .{
+            .len = len_rval,
+            .child = child_rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrTypeof(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    val: Value,
+    span: Span,
+) Error!Value {
+    const rval = try self.loadRValue(
+        alloc,
+        val,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .typeof = .{
+            .val = rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrAlloca(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    ty: Value,
+    init: Value,
+    mut: bool,
+    span: Span,
+) Error!Value {
+    const ty_rval = try self.loadRValue(
+        alloc,
+        ty,
+        span,
+    );
+    const init_rval = try self.loadRValue(
+        alloc,
+        init,
+        span,
+    );
+    const alloca_ptr = try self.pushInstrGetRValue(
+        alloc,
+        .{ .alloca = .{
+            .ty = ty_rval,
+            .init = init_rval,
+            .mut = mut,
+        } },
+        span,
+    );
+    return alloca_ptr.lval();
+}
+
+fn pushInstrLoad(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    pointer: Value,
+    span: Span,
+) Error!Value {
+    const pointer_rval = try self.loadRValue(
+        alloc,
+        pointer,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .load = .{
+            .pointer = pointer_rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrStore(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    lval: Value,
+    val: Value,
+    span: Span,
+) Error!void {
+    if (!lval.is_locator) {
+        @branchHint(.cold);
+        return self.pushError(
+            alloc,
+            span,
+            "cannot assign to a temporary",
+            .{},
+        );
+    }
+    const val_rval = try self.loadRValue(
+        alloc,
+        val,
+        span,
+    );
+    _ = try self.pushInstr(
+        alloc,
+        .{ .store = .{
+            .pointer = lval.val,
+            .val = val_rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrProto(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    extra: Extra,
+    span: Span,
+) Error!Value {
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .proto = .{
+            .extra = extra,
+        } },
+        span,
+    );
+}
+
+fn pushInstrParam(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    span: Span,
+) Error!Value {
+    return try self.pushInstrGetValue(
+        alloc,
+        .param,
+        span,
+    );
+}
+
+fn pushInstrBreak(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    block: Instr.Id,
+    val: Value,
+    span: Span,
+) Error!void {
+    const rval = try self.loadRValue(
+        alloc,
+        val,
+        span,
+    );
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"break" = .{
+            .block = block,
+            .val = rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrContinue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    block: Instr.Id,
+    span: Span,
+) Error!void {
+    _ = try self.pushInstr(
+        alloc,
+        .{ .@"continue" = .{
+            .block = block,
+        } },
+        span,
+    );
+}
+
+// fn pushInstrDbgLoc(
+//     self: *@This(),
+//     alloc: std.mem.Allocator,
+//     line: u32,
+//     col: u32,
+//     span: Span,
+// ) Error!Value {
+//     return try self.pushInstrGetValue(
+//         alloc,
+//         .{ .dbg_loc = .{
+//             .line = line,
+//             .col = col,
+//         } },
+//         span,
+//     );
+// }
+
+fn pushInstrDbgPrint(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    val: Value,
+    span: Span,
+) Error!Value {
+    const rval = try self.loadRValue(
+        alloc,
+        val,
+        span,
+    );
+    return try self.pushInstrGetValue(
+        alloc,
+        .{ .dbg_print = .{
+            .val = rval,
+        } },
+        span,
+    );
+}
+
+fn pushInstrUninitialized(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    span: Span,
+) Error!Instr.Id {
+    return try self.pushInstr(
+        alloc,
+        undefined,
+        span,
+    );
+}
+
 fn pushInstr(
     self: *@This(),
     alloc: std.mem.Allocator,
@@ -444,12 +864,12 @@ fn pushInstr(
     return @enumFromInt(id);
 }
 
-fn pushInstrGetValue(
+fn pushInstrGetRValue(
     self: *@This(),
     alloc: std.mem.Allocator,
     instr: Instr,
     span: Span,
-) Error!Value {
+) Error!RValue {
     const instr_addr = try self.pushInstr(
         alloc,
         instr,
@@ -458,8 +878,50 @@ fn pushInstrGetValue(
     return instr_addr.asValue();
 }
 
-fn overwriteInstr(self: *@This(), idx: Instr.Id, instr: Instr) void {
-    self.instrs.set(@intFromEnum(idx), instr);
+fn pushInstrGetValue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    instr: Instr,
+    span: Span,
+) Error!Value {
+    const rval = try self.pushInstrGetRValue(
+        alloc,
+        instr,
+        span,
+    );
+    return .{
+        .val = rval,
+        .is_locator = false,
+    };
+}
+
+fn loadRValue(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    val: Value,
+    span: Span,
+) Error!RValue {
+    if (!val.is_locator) {
+        return val.val;
+    }
+    return try self.pushInstrGetRValue(
+        alloc,
+        .{ .load = .{
+            .pointer = val.val,
+        } },
+        span,
+    );
+}
+
+fn overwriteInstr(
+    self: *@This(),
+    idx: Instr.Id,
+    instr: Instr,
+) void {
+    self.instrs.set(
+        @intFromEnum(idx),
+        instr,
+    );
 }
 
 pub fn run(
@@ -473,8 +935,6 @@ pub fn run(
 
     try self.pushScope(alloc);
     defer self.popScope();
-
-    try self.symbols.createVar(alloc, "u32", Value.u32_type);
 
     const root_name_hint: NameHint = .new("root");
     try self.convertStructContents(
@@ -491,13 +951,12 @@ pub fn run(
             .{},
         );
     };
-    _ = try self.pushInstr(
+
+    _ = try self.pushInstrCall(
         alloc,
-        .{ .call = .{
-            .func = self.main,
-            .argc = 0,
-            .argv = @enumFromInt(0),
-        } },
+        self.main,
+        @enumFromInt(0),
+        0,
         .{},
     );
 }
@@ -566,29 +1025,43 @@ fn dumpBlock(
                     v.op, v.lhs, v.rhs,
                 });
             },
+            .typeof => |v| {
+                std.debug.print("typeof(val={f})\n", .{
+                    v.val,
+                });
+            },
             .array => |v| {
                 std.debug.print("array(len={f}, child={f})\n", .{
                     v.len, v.child,
                 });
             },
             .alloca => |v| {
-                std.debug.print("alloca(type={f})\n", .{v.ty});
+                std.debug.print("alloca(type={f}, mut={}, init={f})\n", .{
+                    v.ty,
+                    v.mut,
+                    v.init,
+                });
             },
-            .write => |v| {
-                std.debug.print("write(target={f}, val={f})\n", .{
-                    v.target,
+            .load => |v| {
+                std.debug.print("load(pointer={f})\n", .{
+                    v.pointer,
+                });
+            },
+            .store => |v| {
+                std.debug.print("store(pointer={f}, val={f})\n", .{
+                    v.pointer,
                     v.val,
                 });
             },
-            .decl => |v| {
-                std.debug.print("decl(name=\"{s}\", block={{\n", .{
-                    v.name.read(self.source()),
-                });
-                self.dumpBlock(cur, v.block_end, indent + 1);
-                for (0..indent) |_| std.debug.print("    ", .{});
-                std.debug.print("}})\n", .{});
-                cur = v.block_end;
-            },
+            // .decl => |v| {
+            //     std.debug.print("decl(name=\"{s}\", block={{\n", .{
+            //         v.name.read(self.source()),
+            //     });
+            //     self.dumpBlock(cur, v.block_end, indent + 1);
+            //     for (0..indent) |_| std.debug.print("    ", .{});
+            //     std.debug.print("}})\n", .{});
+            //     cur = v.block_end;
+            // },
             .func => |v| {
                 std.debug.print("func(proto={f}, body={{\n", .{v.proto});
                 self.dumpBlock(cur, v.body_block_end, indent + 1);
@@ -683,6 +1156,7 @@ pub fn convertDecl(
     const name = decl.ident.read(self.source());
     const next_name_hint = name_hint.push(name);
     const init_name_hint = next_name_hint.push("init");
+    const span = self.spans()[node_id];
 
     var val = try self.convertExpr(
         alloc,
@@ -690,37 +1164,41 @@ pub fn convertDecl(
         decl.expr,
     );
 
+    var ty: Value = undefined;
     if (decl.type_hint) |type_hint| {
-        const ty = try self.convertExpr(
+        ty = try self.convertExpr(
             alloc,
             &init_name_hint,
             type_hint,
         );
 
-        val = try self.pushInstrGetValue(
+        val = try self.pushInstrBinaryOp(
             alloc,
-            .{ .binary_op = .{
-                .lhs = val,
-                .op = .as,
-                .rhs = ty,
-            } },
+            val,
+            ty,
+            .as,
             self.spans()[type_hint],
+        );
+    } else {
+        ty = try self.pushInstrTypeof(
+            alloc,
+            val,
+            span,
         );
     }
 
-    const named_val = try self.pushInstrGetValue(
+    const alloca = try self.pushInstrAlloca(
         alloc,
-        .{ .dbg_name = .{
-            .name = decl.ident,
-            .val = val,
-            .mut = decl.mut,
-        } },
-        self.spans()[node_id],
+        ty,
+        val,
+        decl.mut,
+        span,
     );
+
     try self.symbols.createVar(
         alloc,
         name,
-        named_val,
+        alloca,
     );
 }
 
@@ -777,6 +1255,11 @@ pub fn convertExpr(
             node_id,
         ),
         .pointer => return try self.convertPointer(
+            alloc,
+            name_hint,
+            node_id,
+        ),
+        .address => return try self.convertAddress(
             alloc,
             name_hint,
             node_id,
@@ -841,15 +1324,14 @@ pub fn convertAssign(
         assign.rhs,
     );
 
-    _ = try self.pushInstr(
+    try self.pushInstrStore(
         alloc,
-        .{ .write = .{
-            .target = target,
-            .val = val,
-        } },
+        target,
+        val,
         self.spans()[node_id],
     );
-    return Value.void;
+
+    return RValue.void.rval();
 }
 
 pub fn convertComptimePrint(
@@ -864,12 +1346,17 @@ pub fn convertComptimePrint(
         name_hint,
         comptime_print.expr,
     );
-    _ = try self.pushInstr(
+    const rval = try self.loadRValue(
         alloc,
-        .{ .dbg_print = .{ .val = val } },
+        val,
         self.spans()[node_id],
     );
-    return Value.void;
+    _ = try self.pushInstr(
+        alloc,
+        .{ .dbg_print = .{ .val = rval } },
+        self.spans()[node_id],
+    );
+    return RValue.void.rval();
 }
 
 pub fn convertIf(
@@ -896,6 +1383,11 @@ pub fn convertIf(
         &name_hint_check,
         @"if".check_expr,
     );
+    const boolean_rval = try self.loadRValue(
+        alloc,
+        boolean,
+        self.spans()[@"if".check_expr],
+    );
 
     const conditional = try self.pushInstr(
         alloc,
@@ -908,13 +1400,11 @@ pub fn convertIf(
         &name_hint_on_true,
         @"if".on_true_scope,
     );
-    _ = try self.pushInstr(
+    try self.pushInstrBreak(
         alloc,
-        .{ .@"break" = .{
-            .block = if_block_entry,
-            .val = on_true_val,
-        } },
-        self.spans()[node_id],
+        if_block_entry,
+        on_true_val,
+        self.spans()[@"if".on_true_scope],
     );
     const on_true_block_end = self.nextInstr();
 
@@ -923,18 +1413,16 @@ pub fn convertIf(
         &name_hint_on_false,
         @"if".on_false_scope,
     );
-    _ = try self.pushInstr(
+    try self.pushInstrBreak(
         alloc,
-        .{ .@"break" = .{
-            .block = if_block_entry,
-            .val = on_false_val,
-        } },
-        self.spans()[node_id],
+        if_block_entry,
+        on_false_val,
+        self.spans()[@"if".on_false_scope],
     );
     const on_false_block_end = self.nextInstr();
 
     self.instrs.set(@intFromEnum(conditional), .{ .conditional = .{
-        .boolean = boolean,
+        .boolean = boolean_rval,
         .on_true_block_end = on_true_block_end,
         .on_false_block_end = on_false_block_end,
     } });
@@ -942,7 +1430,7 @@ pub fn convertIf(
         .block_end = on_false_block_end,
     } });
 
-    return if_block.asValue();
+    return if_block.asValue().rval();
 }
 
 pub fn convertProto(
@@ -972,37 +1460,45 @@ pub fn convertProto(
             &name_hint_param.push(param_name),
             param.type,
         );
-        const param_value = try self.pushInstrGetValue(
+        const param_type_rval = try self.loadRValue(
             alloc,
-            .{ .binary_op = .{
-                .lhs = .undefined,
-                .op = .as,
-                .rhs = param_type,
-            } },
+            param_type,
+            self.spans()[param.type],
+        );
+        const param_value = try self.pushInstrBinaryOp(
+            alloc,
+            RValue.undefined.rval(),
+            param_type_rval.rval(),
+            .as,
             self.spans()[proto.params.start + i],
         );
 
         try self.symbols.createVar(alloc, param_name, param_value);
-        params_extra[i] = .{ .val = param_type };
+        params_extra[i] = .{ .val = param_type_rval };
     }
 
-    const return_type = if (proto.return_ty_expr) |expr_node_id| b: {
+    const return_type_rval = if (proto.return_ty_expr) |expr_node_id| b: {
         const name_hint_ret = name_hint_proto.push("ret");
-        break :b try self.convertExpr(
+        const return_type = try self.convertExpr(
             alloc,
             &name_hint_ret,
             expr_node_id,
         );
-    } else Value.void_type;
+        break :b try self.loadRValue(
+            alloc,
+            return_type,
+            self.spans()[expr_node_id],
+        );
+    } else RValue.void_type;
 
     proto_extra.* = .{
         .param_count = proto.params.len(),
-        .return_type = return_type,
+        .return_type = return_type_rval,
     };
 
-    return self.pushInstrGetValue(
+    return try self.pushInstrProto(
         alloc,
-        .{ .proto = .{ .extra = extra } },
+        extra,
         self.spans()[node_id],
     );
 }
@@ -1039,41 +1535,49 @@ pub fn convertFn(
             &name_hint_fn,
             func_node.scope_or_symexpr,
         );
-        _ = try self.pushInstr(
+        try self.pushInstrBreak(
             alloc,
-            .{ .@"break" = .{
-                .block = func_block_start,
-                .val = symbol,
-            } },
+            func_block_start,
+            symbol,
             self.spans()[func_node.scope_or_symexpr],
         );
     } else {
         const argc = proto_node.params.len();
 
         for (0..argc) |i| {
-            _ = try self.pushInstrGetValue(
+            const arg = try self.pushInstrParam(
                 alloc,
-                .param,
                 self.spans()[proto_node.params.start + i],
             );
+            const val: Instr.Id = @enumFromInt(@intFromEnum(func_block_start) + i);
+            std.debug.assert(arg.val.asIndex() == val);
         }
 
         for (0..argc) |i| {
             const param = self.nodes()[proto_node.params.start + i].param;
-            const val: Instr.Id = @enumFromInt(@intFromEnum(func_block_start) + i);
-            const named_val = try self.pushInstrGetValue(
+            const param_instr: Instr.Id = @enumFromInt(@intFromEnum(func_block_start) + i);
+            const param_val = param_instr.asValue().rval();
+            const span = self.spans()[proto_node.params.start + i];
+
+            // FIXME: inefficient: building the function proto
+            // type already creates values for param types
+            const param_type = try self.pushInstrTypeof(
                 alloc,
-                .{ .dbg_name = .{
-                    .name = param.ident,
-                    .val = val.asValue(),
-                    .mut = false,
-                } },
-                self.spans()[proto_node.params.start + i],
+                param_val,
+                span,
+            );
+
+            const param_alloca = try self.pushInstrAlloca(
+                alloc,
+                param_type,
+                param_val,
+                false,
+                span,
             );
             try self.symbols.createVar(
                 alloc,
                 param.ident.read(self.source()),
-                named_val,
+                param_alloca,
             );
         }
 
@@ -1088,22 +1592,20 @@ pub fn convertFn(
             &name_hint_fn,
             func_node.scope_or_symexpr,
         );
-        _ = try self.pushInstr(
+        try self.pushInstrBreak(
             alloc,
-            .{ .@"break" = .{
-                .block = func_block_start,
-                .val = return_value,
-            } },
+            func_block_start,
+            return_value,
             self.spans()[node_id],
         );
     }
     const body_block_end = self.nextInstr();
 
     self.overwriteInstr(func_block, .{ .func = .{
-        .proto = proto,
+        .proto = proto.assumeRValue(),
         .body_block_end = body_block_end,
     } });
-    return func_block.asValue();
+    return func_block.asValue().rval();
 }
 
 pub fn convertLoop(
@@ -1135,9 +1637,9 @@ pub fn convertLoop(
         loop.scope,
     );
 
-    _ = try self.pushInstr(
+    try self.pushInstrContinue(
         alloc,
-        .{ .@"continue" = .{ .block = loop_entry } },
+        loop_entry,
         self.spans()[node_id],
     );
 
@@ -1146,7 +1648,7 @@ pub fn convertLoop(
         .block_end = loop_block_end,
     } });
 
-    return Value.void;
+    return RValue.void.rval();
 }
 
 pub fn convertScope(
@@ -1158,7 +1660,7 @@ pub fn convertScope(
     const scope = self.nodes()[node_id].scope;
 
     const stmts, const last_stmt = scope.stmts.splitLast() orelse {
-        return Value.void;
+        return RValue.void.rval();
     };
 
     try self.pushScope(alloc);
@@ -1178,7 +1680,7 @@ pub fn convertScope(
             name_hint,
             last_stmt,
         );
-        return Value.void;
+        return RValue.void.rval();
     } else {
         return try self.convertExpr(
             alloc,
@@ -1238,7 +1740,7 @@ pub fn convertReturn(
             val,
         )
     else
-        Value.void;
+        RValue.void.rval();
 
     const func = self.function_context.getLastOrNull() orelse {
         return self.pushError(
@@ -1248,12 +1750,10 @@ pub fn convertReturn(
             .{},
         );
     };
-    _ = try self.pushInstr(
+    try self.pushInstrBreak(
         alloc,
-        .{ .@"break" = .{
-            .block = func,
-            .val = ret_val,
-        } },
+        func,
+        ret_val,
         self.spans()[node_id],
     );
 }
@@ -1273,7 +1773,7 @@ pub fn convertBreak(
             val,
         )
     else
-        Value.void;
+        RValue.void.rval();
 
     const block = self.break_context.getLastOrNull() orelse {
         return self.pushError(
@@ -1283,12 +1783,10 @@ pub fn convertBreak(
             .{},
         );
     };
-    _ = try self.pushInstr(
+    try self.pushInstrBreak(
         alloc,
-        .{ .@"break" = .{
-            .block = block,
-            .val = br_val,
-        } },
+        block,
+        br_val,
         self.spans()[node_id],
     );
 }
@@ -1327,23 +1825,20 @@ pub fn convertArray(
 ) Error!Value {
     const array = self.nodes()[node_id].array;
 
-    const length = try self.convertExpr(
+    const len = try self.convertExpr(
         alloc,
         &name_hint.push("length"),
         array.length_expr,
     );
-    const element = try self.convertExpr(
+    const child = try self.convertExpr(
         alloc,
         &name_hint.push("element"),
         array.elements_expr,
     );
-
-    return try self.pushInstrGetValue(
+    return try self.pushInstrArray(
         alloc,
-        .{ .array = .{
-            .len = length,
-            .child = element,
-        } },
+        len,
+        child,
         self.spans()[node_id],
     );
 }
@@ -1361,16 +1856,12 @@ pub fn convertSlice(
         name_hint,
         slice.elements_expr,
     );
-
-    const result = try self.pushInstr(
+    return try self.pushInstrUnaryOp(
         alloc,
-        .{ .unary_op = .{
-            .value = elements,
-            .op = if (slice.mut) .slice_mut else .slice,
-        } },
+        elements,
+        if (slice.mut) .slice_mut else .slice,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub fn convertPointer(
@@ -1386,16 +1877,34 @@ pub fn convertPointer(
         name_hint,
         pointer.pointee_expr,
     );
-
-    const result = try self.pushInstr(
+    return try self.pushInstrUnaryOp(
         alloc,
-        .{ .unary_op = .{
-            .value = elements,
-            .op = if (pointer.mut) .pointer_mut else .pointer,
-        } },
+        elements,
+        if (pointer.mut) .pointer_mut else .pointer,
         self.spans()[node_id],
     );
-    return result.asValue();
+}
+
+pub fn convertAddress(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    name_hint: *const NameHint,
+    node_id: NodeId,
+) Error!Value {
+    const address = self.nodes()[node_id].address;
+
+    const pointee = try self.convertExpr(
+        alloc,
+        name_hint,
+        address.pointee_expr,
+    );
+
+    // self.pushInstr(alloc, .{
+    //     .alloca = pointee,
+    // }, self.spans()[node_id]);
+
+    _ = pointee;
+    @panic("todo");
 }
 
 pub fn convertBinaryOp(
@@ -1418,16 +1927,13 @@ pub fn convertBinaryOp(
         binary_op.rhs,
     );
 
-    const result = try self.pushInstr(
+    return try self.pushInstrBinaryOp(
         alloc,
-        .{ .binary_op = .{
-            .lhs = lhs,
-            .rhs = rhs,
-            .op = binary_op.op,
-        } },
+        lhs,
+        rhs,
+        binary_op.op,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub fn convertFieldAcc(
@@ -1450,16 +1956,13 @@ pub fn convertFieldAcc(
         self.spans()[node_id],
     );
 
-    const result = try self.pushInstr(
+    return try self.pushInstrBinaryOp(
         alloc,
-        .{ .binary_op = .{
-            .lhs = container,
-            .rhs = field,
-            .op = BinaryOp.field,
-        } },
+        container,
+        field,
+        .field,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub fn convertIndexAcc(
@@ -1481,16 +1984,13 @@ pub fn convertIndexAcc(
         index_acc.expr,
     );
 
-    const result = try self.pushInstr(
+    return try self.pushInstrBinaryOp(
         alloc,
-        .{ .binary_op = .{
-            .lhs = container,
-            .rhs = index,
-            .op = BinaryOp.index,
-        } },
+        container,
+        index,
+        .index,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub fn convertCall(
@@ -1521,7 +2021,12 @@ pub fn convertCall(
             name_hint,
             i,
         );
-        arg.* = .{ .val = arg_expr_result };
+        const arg_expr_result_rval = try self.loadRValue(
+            alloc,
+            arg_expr_result,
+            self.spans()[i],
+        );
+        arg.* = .{ .val = arg_expr_result_rval };
         arg_node_id.* = i;
     }
 
@@ -1531,16 +2036,13 @@ pub fn convertCall(
         call.val,
     );
 
-    const result = try self.pushInstr(
+    return try self.pushInstrCall(
         alloc,
-        .{ .call = .{
-            .func = func,
-            .argv = argv,
-            .argc = argc,
-        } },
+        func,
+        argv,
+        argc,
         self.spans()[call.val],
     );
-    return result.asValue();
 }
 
 pub fn convertAccess(
@@ -1557,40 +2059,40 @@ pub fn convertAccess(
     // }
 
     if (std.meta.stringToEnum(BuiltinVariable, var_name)) |builtin| {
-        return switch (builtin) {
-            .type => Value.type_type,
-            .void => Value.void_type,
-            .bool => Value.bool_type,
-            .u8 => Value.u8_type,
-            .u16 => Value.u16_type,
-            .u32 => Value.u32_type,
-            .u64 => Value.u64_type,
-            .usize => Value.usize_type,
-            .i8 => Value.i8_type,
-            .i16 => Value.i16_type,
-            .i32 => Value.i32_type,
-            .i64 => Value.i64_type,
-            .isize => Value.isize_type,
-            .f32 => Value.f32_type,
-            .f64 => Value.f64_type,
+        return (switch (builtin) {
+            .type => RValue.type_type,
+            .void => RValue.void_type,
+            .bool => RValue.bool_type,
+            .u8 => RValue.u8_type,
+            .u16 => RValue.u16_type,
+            .u32 => RValue.u32_type,
+            .u64 => RValue.u64_type,
+            .usize => RValue.usize_type,
+            .i8 => RValue.i8_type,
+            .i16 => RValue.i16_type,
+            .i32 => RValue.i32_type,
+            .i64 => RValue.i64_type,
+            .isize => RValue.isize_type,
+            .f32 => RValue.f32_type,
+            .f64 => RValue.f64_type,
 
-            .c_int => Value.c_int_type,
-            .c_char => Value.c_char_type,
-            .c_long => Value.c_long_type,
-            .c_longlong => Value.c_longlong_type,
-            .c_short => Value.c_short_type,
-            .c_uint => Value.c_uint_type,
-            .c_ulong => Value.c_ulong_type,
-            .c_ulonglong => Value.c_ulonglong_type,
-            .c_ushort => Value.c_ushort_type,
+            .c_int => RValue.c_int_type,
+            .c_char => RValue.c_char_type,
+            .c_long => RValue.c_long_type,
+            .c_longlong => RValue.c_longlong_type,
+            .c_short => RValue.c_short_type,
+            .c_uint => RValue.c_uint_type,
+            .c_ulong => RValue.c_ulong_type,
+            .c_ulonglong => RValue.c_ulonglong_type,
+            .c_ushort => RValue.c_ushort_type,
 
-            .false => Value.false,
-            .true => Value.true,
-            .undefined => Value.undefined,
-        };
+            .false => RValue.false,
+            .true => RValue.true,
+            .undefined => RValue.undefined,
+        }).rval();
     }
 
-    const result = self.symbols.findVar(var_name) orelse {
+    return self.symbols.findVar(var_name) orelse {
         return self.pushError(
             alloc,
             self.spans()[node_id],
@@ -1598,7 +2100,6 @@ pub fn convertAccess(
             .{},
         );
     };
-    return result;
 }
 
 pub fn convertStrLit(
@@ -1617,9 +2118,9 @@ pub fn convertStrLit(
     span_without_quotes.start += 1;
     span_without_quotes.end -= 1;
 
-    return try self.pushInstrGetValue(
+    return try self.pushInstrStrLit(
         alloc,
-        .{ .str_lit = .{ .value = span_without_quotes } },
+        span_without_quotes,
         self.spans()[node_id],
     );
 }
@@ -1630,14 +2131,11 @@ pub fn convertFloatLit(
     node_id: NodeId,
 ) Error!Value {
     const value = self.nodes()[node_id].float_lit.val;
-    const result = try self.pushInstr(
+    return try self.pushInstrFloatLit(
         alloc,
-        .{ .float_lit = .{
-            .value = value,
-        } },
+        value,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub fn convertIntLit(
@@ -1647,27 +2145,26 @@ pub fn convertIntLit(
 ) Error!Value {
     // TODO: support big ints
     const value = self.nodes()[node_id].int_lit.val;
-    const result = try self.pushInstr(
+    return try self.pushInstrIntLit(
         alloc,
-        .{ .int_lit = .{ .value = @intCast(value) } },
+        value,
         self.spans()[node_id],
     );
-    return result.asValue();
 }
 
 pub const Symbols = struct {
     var_name_hashmap: std.StringHashMapUnmanaged(ShadowChainEntry) = .empty,
     shadow_chain: std.ArrayList(ShadowChainEntry) = .empty,
-    val_names: std.AutoHashMapUnmanaged(Value, []const u8) = .empty,
+    val_names: std.AutoHashMapUnmanaged(RValue, []const u8) = .empty,
 
     /// holds the number of values in the value stack at that scopes position
     scope_sizes: std.ArrayList(u32) = .empty,
     /// holds all values of all scopes
-    value_stack: std.ArrayList(Value) = .empty,
+    value_stack: std.ArrayList(RValue) = .empty,
 
     const ShadowChainEntry = struct {
         prev: u32,
-        this: Value,
+        this: RValue,
     };
 
     pub fn deinit(
@@ -1687,6 +2184,8 @@ pub const Symbols = struct {
         var_name: []const u8,
         val: Value,
     ) Error!void {
+        std.debug.assert(val.is_locator);
+
         try self.var_name_hashmap.ensureUnusedCapacity(alloc, 1);
         try self.shadow_chain.ensureUnusedCapacity(alloc, 1);
         try self.val_names.ensureUnusedCapacity(alloc, 1);
@@ -1694,21 +2193,21 @@ pub const Symbols = struct {
         std.debug.assert(self.scope_sizes.items.len != 0);
 
         self.scope_sizes.items[self.scope_sizes.items.len - 1] += 1;
-        self.value_stack.appendAssumeCapacity(val);
+        self.value_stack.appendAssumeCapacity(val.val);
 
-        self.val_names.putAssumeCapacity(val, var_name);
+        self.val_names.putAssumeCapacity(val.val, var_name);
         const lookup_entry = self.var_name_hashmap.getOrPutAssumeCapacity(var_name);
         if (lookup_entry.found_existing) {
             const prev: u32 = @intCast(self.shadow_chain.items.len);
             self.shadow_chain.appendAssumeCapacity(lookup_entry.value_ptr.*);
             lookup_entry.value_ptr.* = .{
                 .prev = prev,
-                .this = val,
+                .this = val.val,
             };
         } else {
             lookup_entry.value_ptr.* = .{
                 .prev = std.math.maxInt(u32),
-                .this = val,
+                .this = val.val,
             };
         }
     }
@@ -1718,7 +2217,7 @@ pub const Symbols = struct {
         var_name: []const u8,
     ) ?Value {
         const entry = self.var_name_hashmap.get(var_name) orelse return null;
-        return entry.this;
+        return entry.this.lval();
     }
 
     fn popVar(

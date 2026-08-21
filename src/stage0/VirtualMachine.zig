@@ -6,6 +6,7 @@ const Command = @import("main.zig").Command;
 const IrGenerator = @import("IrGenerator.zig");
 const Instr = IrGenerator.Instr;
 const Value = IrGenerator.Value;
+const RValue = IrGenerator.RValue;
 const Span = @import("Tokenizer.zig").Span;
 const VirtualMachine = @This();
 
@@ -16,6 +17,18 @@ pub const EvalMode = enum {
     /// generate code and evaluate loops only once
     /// ; runtime
     compile,
+};
+
+pub const Alloca = struct {
+    pub const Id = struct {
+        index: u32,
+        version: u32,
+        data: [*]u8,
+    };
+
+    version: u32,
+    alloca: [*]u8,
+    size: u32,
 };
 
 pub const Frame = struct {
@@ -535,6 +548,8 @@ frames: std.SinglyLinkedList = .{},
 types: std.MultiArrayList(Type) = .empty,
 type_infos: std.MultiArrayList(TypeInfo) = .empty,
 type_map: std.HashMapUnmanaged(Type, Type.Id, Type.Context, 80) = .empty,
+allocas: std.MultiArrayList(Alloca) = .empty,
+first_free_alloca: u32 = 0,
 arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 errors: std.ArrayList(ErrorMsg) = .empty,
 error_alloc: std.mem.Allocator = undefined,
@@ -546,7 +561,7 @@ mode: EvalMode = .compile,
 cli: *const Command,
 ir_gen: *const IrGenerator,
 
-pub const builtin_registers: [IrGenerator.Value.builtin_count]Register = [_]Register{
+pub const builtin_registers: [IrGenerator.RValue.builtin_count]Register = [_]Register{
     Register.ty(.type),
     Register.ty(.void),
     Register.ty(.bool),
@@ -922,14 +937,27 @@ fn runOnce(
             try self.set(alloc, dst);
         },
         // .array => {},
-        // .alloca => {},
-        .write => |v| {
-            const target_reg = v.target.asIndex() orelse {
-                return self.pushError(
-                    self.ip,
-                    "attempt to write to an rvalue",
-                    .{},
-                );
+        .alloca => |v| {
+            const alloca_type = try self.getType(v.ty);
+            const alloca_type_info = self.readTypeInfo(alloca_type);
+
+            const alloca = frame.arena.allocator().rawAlloc(
+                alloca_type_info.size,
+                .fromByteUnits(alloca_type_info.alignment),
+                @returnAddress(),
+            ) orelse return error.OutOfMemory;
+
+            self.first_free_alloca;
+
+            v.init;
+        },
+        .load => |v| {
+            _ = v;
+            @panic("TODO");
+        },
+        .store => |v| {
+            const target_reg = v.pointer.asIndex() orelse {
+                @panic("invalid IR, cannot write to an rvalue");
             };
             const target = try self.getPtr(target_reg);
             target.* = try self.get(v.val);
@@ -1134,7 +1162,7 @@ fn setIndirect(
 
 fn get(
     self: *@This(),
-    reg: Value,
+    reg: RValue,
 ) Error!Register {
     if (self.cli.dump_vm) std.debug.print("get {f}\n", .{reg});
 
@@ -1182,7 +1210,7 @@ fn getPtr(
 
 fn getType(
     self: *@This(),
-    reg: Value,
+    reg: RValue,
 ) Error!Type.Id {
     const raw = try self.get(reg);
     return try self.regAsType(raw);
@@ -1190,7 +1218,7 @@ fn getType(
 
 fn getBool(
     self: *@This(),
-    reg: Value,
+    reg: RValue,
 ) Error!?bool {
     const raw = try self.get(reg);
     return try self.regAsBool(raw);
@@ -1225,63 +1253,63 @@ fn regAsBool(
     return reg.val.bool;
 }
 
-fn sizeOf(
-    self: *const @This(),
-    type_id: Type.Id,
-) usize {
-    const ty = self.typeInfo(type_id);
-    return switch (ty) {
-        .type => @sizeOf(Type.Id),
-        .void => @sizeOf(void),
-        .bool => @sizeOf(bool),
-        .int => |v| switch (v.bits) {
-            .@"8" => @sizeOf(u8),
-            .@"16" => @sizeOf(u16),
-            .@"32" => @sizeOf(u32),
-            .@"64" => @sizeOf(u64),
-        },
-        .float => |v| switch (v.bits) {
-            .@"32" => @sizeOf(f32),
-            .@"64" => @sizeOf(f64),
-        },
-        .array => |v| {
-            const elem_size = std.mem.alignForward(usize, self.sizeOf(v.child), self.alignOf(v.child));
-            return elem_size * v.len;
-        },
-        .slice => @sizeOf([]anyopaque),
-        .pointer => @sizeOf(*anyopaque),
-        .func => @sizeOf(Instr.Id),
-    };
-}
+// fn sizeOf(
+//     self: *const @This(),
+//     type_id: Type.Id,
+// ) usize {
+//     const ty = self.readTypeInfo(type_id);
+//     return switch (ty) {
+//         .type => @sizeOf(Type.Id),
+//         .void => @sizeOf(void),
+//         .bool => @sizeOf(bool),
+//         .int => |v| switch (v.bits) {
+//             .@"8" => @sizeOf(u8),
+//             .@"16" => @sizeOf(u16),
+//             .@"32" => @sizeOf(u32),
+//             .@"64" => @sizeOf(u64),
+//         },
+//         .float => |v| switch (v.bits) {
+//             .@"32" => @sizeOf(f32),
+//             .@"64" => @sizeOf(f64),
+//         },
+//         .array => |v| {
+//             const elem_size = std.mem.alignForward(usize, self.sizeOf(v.child), self.alignOf(v.child));
+//             return elem_size * v.len;
+//         },
+//         .slice => @sizeOf([]anyopaque),
+//         .pointer => @sizeOf(*anyopaque),
+//         .func => @sizeOf(Instr.Id),
+//     };
+// }
 
-fn alignOf(
-    self: *const @This(),
-    type_id: Type.Id,
-) usize {
-    const ty = self.typeInfo(type_id);
-    return switch (ty) {
-        .type => @alignOf(Type.Id),
-        .void => @alignOf(void),
-        .bool => @alignOf(bool),
-        .int => |v| switch (v.bits) {
-            .@"8" => @alignOf(u8),
-            .@"16" => @alignOf(u16),
-            .@"32" => @alignOf(u32),
-            .@"64" => @alignOf(u64),
-        },
-        .float => |v| switch (v.bits) {
-            .@"32" => @alignOf(f32),
-            .@"64" => @alignOf(f64),
-        },
-        .array => |v| {
-            const elem_size = std.mem.alignForward(usize, self.sizeOf(v.child), self.alignOf(v.child));
-            return elem_size * v.len;
-        },
-        .slice => @sizeOf([]anyopaque),
-        .pointer => @sizeOf(*anyopaque),
-        .func => @sizeOf(Instr.Id),
-    };
-}
+// fn alignOf(
+//     self: *const @This(),
+//     type_id: Type.Id,
+// ) usize {
+//     const ty = self.readTypeInfo(type_id);
+//     return switch (ty) {
+//         .type => @alignOf(Type.Id),
+//         .void => @alignOf(void),
+//         .bool => @alignOf(bool),
+//         .int => |v| switch (v.bits) {
+//             .@"8" => @alignOf(u8),
+//             .@"16" => @alignOf(u16),
+//             .@"32" => @alignOf(u32),
+//             .@"64" => @alignOf(u64),
+//         },
+//         .float => |v| switch (v.bits) {
+//             .@"32" => @alignOf(f32),
+//             .@"64" => @alignOf(f64),
+//         },
+//         .array => |v| {
+//             const elem_size = std.mem.alignForward(usize, self.sizeOf(v.child), self.alignOf(v.child));
+//             return elem_size * v.len;
+//         },
+//         .slice => @sizeOf([]anyopaque),
+//         .pointer => @sizeOf(*anyopaque),
+//         .func => @sizeOf(Instr.Id),
+//     };
+// }
 
 fn PrimitiveOf(
     comptime type_id: Type.Id,
@@ -1342,6 +1370,19 @@ fn deallocFrame(
 ) void {
     self.reusable_frames.prepend(&frame.node);
 }
+
+fn allocAlloca(
+    self: *@This(),
+    alloc: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+) void {
+    self.first_free_alloca;
+    self.allocas;
+}
+
+fn freeAlloca(
+    self: *@This(),
+) void {}
 
 const FrameKind = enum { global, local, local_same };
 
