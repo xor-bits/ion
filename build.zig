@@ -30,6 +30,9 @@ pub fn build(b: *std.Build) !void {
     const run_step = b.step("run", "run the compiler");
     run_step.dependOn(&run_stage0_compiler.step);
 
+    const check_step = b.step("check", "LSP check build");
+    check_step.dependOn(&stage0_compiler.step);
+
     //     const run_stage0_compiler = b.addRunArtifact(stage0_compiler);
     //     run_stage0_compiler.addArg("build");
     //     run_stage0_compiler.addFileArg(b.path("./src/stage1/main.ion"));
