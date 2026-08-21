@@ -777,6 +777,7 @@ fn runOnce(
                 const ip = func_reg.val.func.entry;
 
                 const call_frame = try self.allocFrame(alloc);
+                errdefer self.deallocFrame(call_frame);
 
                 for (args, 0..) |arg, i| {
                     const passed_arg = try self.get(arg.val);
@@ -1312,6 +1313,13 @@ fn allocFrame(
     }
 }
 
+fn deallocFrame(
+    self: *@This(),
+    frame: *Frame,
+) void {
+    self.reusable_frames.prepend(&frame.node);
+}
+
 const FrameKind = enum { global, local, local_same };
 
 fn pushAllocatedFrame(
@@ -1353,7 +1361,7 @@ fn popFrame(
     const frame = frameFromNode(self.frames.popFirst().?);
     if (self.verbose) std.debug.print("pop frame {f}\n", .{frame.block});
     frame.clear();
-    self.reusable_frames.prepend(&frame.node);
+    self.deallocFrame(frame);
 }
 
 fn frameFromNode(node: *std.SinglyLinkedList.Node) *Frame {
