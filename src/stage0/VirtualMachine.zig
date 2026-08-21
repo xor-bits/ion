@@ -2,6 +2,7 @@ const std = @import("std");
 
 const ops = @import("VirtualMachine/ops.zig");
 
+const Command = @import("main.zig").Command;
 const IrGenerator = @import("IrGenerator.zig");
 const Instr = IrGenerator.Instr;
 const Value = IrGenerator.Value;
@@ -507,12 +508,16 @@ pub const Function = extern struct {
 pub const ErrorMsg = struct {
     span: Span,
     message: []const u8,
+    instruction: ?Instr.Id = null,
 
     pub fn format(
         self: @This(),
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
         try writer.print("{s}", .{self.message});
+        if (self.instruction) |instr| {
+            try writer.print(" (at {f})", .{instr});
+        }
     }
 };
 
@@ -537,9 +542,8 @@ ip: Instr.Id = .start,
 
 /// fuel for instruction, null for unlimited
 gas: ?usize = null,
-/// debug print all frame pop/push events and register set/get events
-verbose: bool = false,
 mode: EvalMode = .compile,
+cli: *const Command,
 ir_gen: *const IrGenerator,
 
 pub const builtin_registers: [IrGenerator.Value.builtin_count]Register = [_]Register{
@@ -616,6 +620,22 @@ pub fn printErrors(
 
 pub fn pushError(
     self: *@This(),
+    ip: Instr.Id,
+    comptime fmt: []const u8,
+    args: anytype,
+) Error {
+    @branchHint(.cold);
+    return self.pushErrorSpan(
+        ip,
+        self.span(ip),
+        fmt,
+        args,
+    );
+}
+
+pub fn pushErrorSpan(
+    self: *@This(),
+    ip: Instr.Id,
     s: Span,
     comptime fmt: []const u8,
     args: anytype,
@@ -625,6 +645,7 @@ pub fn pushError(
     try self.errors.append(self.error_alloc, .{
         .message = message,
         .span = s,
+        .instruction = if (self.cli.dump_ir) ip else null,
     });
     return Error.Runtime;
 }
@@ -722,11 +743,11 @@ fn runOnce(
     };
     frame.instr = @enumFromInt(@intFromEnum(self.ip) + 1);
 
-    if (self.verbose) std.debug.print("exec {f} ({t})\n", .{
+    if (self.cli.dump_vm) std.debug.print("exec {f} ({t})\n", .{
         self.ip,
         opcode,
     });
-    errdefer if (self.verbose) std.debug.print("error at {f} ({t})\n", .{
+    errdefer if (self.cli.dump_vm) std.debug.print("error at {f} ({t})\n", .{
         self.ip,
         opcode,
     });
@@ -748,7 +769,7 @@ fn runOnce(
             const proto = self.readType(func_reg.type);
             if (proto != .func) {
                 return self.pushError(
-                    self.span(self.ip),
+                    self.ip,
                     "'{f}' is not callable",
                     .{func_reg.type.print(self)},
                 );
@@ -756,7 +777,7 @@ fn runOnce(
 
             if (v.argc != proto.func.params.len) {
                 return self.pushError(
-                    self.span(self.ip),
+                    self.ip,
                     "incorrect argument count: expected {}, found {}",
                     .{ proto.func.params.len, v.argc },
                 );
@@ -782,7 +803,8 @@ fn runOnce(
                 for (args, 0..) |arg, i| {
                     const passed_arg = try self.get(arg.val);
                     if (passed_arg.type != proto.func.params[i]) {
-                        return self.pushError(
+                        return self.pushErrorSpan(
+                            self.ip,
                             self.ir_gen.parser.node_spans.items[node_ids[i]],
                             "unexpected function argument type: expected '{f}', got: '{f}'",
                             .{
@@ -809,7 +831,8 @@ fn runOnce(
                 for (args, 0..) |arg, i| {
                     const passed_arg = try self.get(arg.val);
                     if (passed_arg.type != proto.func.params[i]) {
-                        return self.pushError(
+                        return self.pushErrorSpan(
+                            self.ip,
                             self.ir_gen.parser.node_spans.items[node_ids[i]],
                             "unexpected function argument type: expected '{f}', got: '{f}'",
                             .{
@@ -860,7 +883,7 @@ fn runOnce(
                 inline else => |op| b: {
                     break :b @field(ops, @tagName(op))(val) catch {
                         return self.pushError(
-                            self.span(self.ip),
+                            self.ip,
                             "unary op '{f}' not supported for '{f}'",
                             .{ op, val.type.print(self) },
                         );
@@ -889,7 +912,7 @@ fn runOnce(
                 inline else => |op| b: {
                     break :b @field(ops, @tagName(op))(lhs, rhs) catch {
                         return self.pushError(
-                            self.span(self.ip),
+                            self.ip,
                             "binary op '{f}' not supported for '{f}' and '{f}'",
                             .{ op, lhs.type.print(self), rhs.type.print(self) },
                         );
@@ -903,7 +926,7 @@ fn runOnce(
         .write => |v| {
             const target_reg = v.target.asIndex() orelse {
                 return self.pushError(
-                    self.span(self.ip),
+                    self.ip,
                     "attempt to write to an rvalue",
                     .{},
                 );
@@ -925,7 +948,7 @@ fn runOnce(
                 const proto_type = self.readType(proto);
                 if (proto_type != .func) {
                     return self.pushError(
-                        self.span(self.ip),
+                        self.ip,
                         "type '{f}' is not a function prototype",
                         .{proto.print(self)},
                     );
@@ -989,7 +1012,7 @@ fn runOnce(
             if (return_type) |t| {
                 if (break_val.type != t) {
                     return self.pushError(
-                        self.span(self.ip),
+                        self.ip,
                         "unexpected type: expected '{f}', found: '{f}'",
                         .{ t.print(self), break_val.type.print(self) },
                     );
@@ -1105,7 +1128,7 @@ fn setIndirect(
     reg: Instr.Id,
     val: Register,
 ) Error!void {
-    if (self.verbose) std.debug.print("set %{}\n", .{@intFromEnum(self.ip)});
+    if (self.cli.dump_vm) std.debug.print("set %{}\n", .{@intFromEnum(self.ip)});
     try frame.registers.putNoClobber(alloc, reg, val);
 }
 
@@ -1113,7 +1136,7 @@ fn get(
     self: *@This(),
     reg: Value,
 ) Error!Register {
-    if (self.verbose) std.debug.print("get {f}\n", .{reg});
+    if (self.cli.dump_vm) std.debug.print("get {f}\n", .{reg});
 
     const idx = reg.asIndex() orelse {
         return builtin_registers[@intFromEnum(reg)];
@@ -1126,7 +1149,7 @@ fn getPtr(
     self: *@This(),
     reg: Instr.Id,
 ) Error!*Register {
-    if (self.verbose) std.debug.print("getPtr {f}\n", .{reg});
+    if (self.cli.dump_vm) std.debug.print("getPtr {f}\n", .{reg});
 
     var frame = self.topFrame();
     const current_function = frame.function;
@@ -1135,7 +1158,7 @@ fn getPtr(
         if (frame.registers.getPtr(reg)) |found| {
             if (frame.function != null and frame.function != current_function) {
                 return self.pushError(
-                    self.span(self.ip),
+                    self.ip,
                     "variable not accessible",
                     .{},
                 );
@@ -1148,7 +1171,7 @@ fn getPtr(
         // FIXME: handle captures properly
         const next = frame.node.next orelse {
             return self.pushError(
-                self.span(self.ip),
+                self.ip,
                 "internal error: register not found",
                 .{},
             );
@@ -1179,7 +1202,7 @@ fn regAsType(
 ) Error!Type.Id {
     if (reg.type != .type) return {
         return self.pushError(
-            self.span(self.ip),
+            self.ip,
             "unexpected type: expected 'type', found: '{f}'",
             .{reg.type.print(self)},
         );
@@ -1193,7 +1216,7 @@ fn regAsBool(
 ) Error!?bool {
     if (reg.type != .bool) return {
         return self.pushError(
-            self.span(self.ip),
+            self.ip,
             "unexpected type: expected 'bool', found: '{f}'",
             .{reg.type.print(self)},
         );
@@ -1329,7 +1352,7 @@ fn pushAllocatedFrame(
     kind: FrameKind,
     // mode: EvalMode,
 ) void {
-    if (self.verbose) std.debug.print("push frame {f}\n", .{ip});
+    if (self.cli.dump_vm) std.debug.print("push frame {f}\n", .{ip});
 
     frame.block = ip;
     frame.instr = ip;
@@ -1359,7 +1382,7 @@ fn popFrame(
     self: *@This(),
 ) void {
     const frame = frameFromNode(self.frames.popFirst().?);
-    if (self.verbose) std.debug.print("pop frame {f}\n", .{frame.block});
+    if (self.cli.dump_vm) std.debug.print("pop frame {f}\n", .{frame.block});
     frame.clear();
     self.deallocFrame(frame);
 }
@@ -1444,7 +1467,7 @@ fn resolveType(
             const child = self.readTypeInfo(v.child);
             break :b child.repeat(v.len) orelse {
                 return self.pushError(
-                    self.span(self.ip),
+                    self.ip,
                     "type too large",
                     .{},
                 );
@@ -1515,7 +1538,7 @@ fn cast(
     }
 
     return self.pushError(
-        self.span(self.ip),
+        self.ip,
         "cannot cast '{f}' to '{f}'",
         .{ val.type.print(self), as.print(self) },
     );

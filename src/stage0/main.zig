@@ -7,12 +7,13 @@ const VirtualMachine = @import("VirtualMachine.zig");
 // const Sema = @import("Sema.zig");
 const Codegen = @import("Codegen.zig");
 
-const Command = struct {
+pub const Command = struct {
     self_exe: []const u8 = "",
     help: bool = false,
     dump_tokens: bool = false,
     dump_ast: bool = false,
     dump_ir: bool = false,
+    /// debug print all frame pop/push events and register set/get events
     dump_vm: bool = false,
     run: bool = false,
     subcmd: ?SubCommand = null,
@@ -27,7 +28,7 @@ const Command = struct {
     };
 };
 
-const SubCommand = union(enum) {
+pub const SubCommand = union(enum) {
     eval: struct {
         source_path: ?[]const u8 = null,
     },
@@ -248,14 +249,20 @@ fn eval(
 
     // stdin.readPositionalAll(io, buffer: []u8, offset: u64)
 
-    var tokenizer: Tokenizer = .{ .source = source };
+    var tokenizer: Tokenizer = .{
+        // .cli = &cli,
+        .source = source,
+    };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
     if (cli.dump_tokens)
         tokenizer.dump();
 
-    var parser: Parser = .{ .tokenizer = &tokenizer };
+    var parser: Parser = .{
+        // .cli = &cli,
+        .tokenizer = &tokenizer,
+    };
     defer parser.deinit(alloc);
     parser.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -268,7 +275,10 @@ fn eval(
     if (cli.dump_ast)
         parser.dump();
 
-    var ir_gen: IrGenerator = .{ .parser = &parser };
+    var ir_gen: IrGenerator = .{
+        // .cli = &cli,
+        .parser = &parser,
+    };
     defer ir_gen.deinit(alloc);
     ir_gen.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -281,10 +291,12 @@ fn eval(
     if (cli.dump_ir)
         ir_gen.dump();
 
-    var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
-    vm.verbose = cli.dump_vm;
-    // vm.gas = 1000;
+    var vm: VirtualMachine = .{
+        .cli = &cli,
+        .ir_gen = &ir_gen,
+    };
     vm.mode = .eval;
+    // vm.gas = 1000;
     defer vm.deinit(alloc);
     vm.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -333,7 +345,10 @@ fn build(
     // const writer = &source_writer.interface;
 
     // std.debug.print("running lexer\n", .{});
-    var tokenizer: Tokenizer = .{ .source = source };
+    var tokenizer: Tokenizer = .{
+        // .cli = &cli,
+        .source = source,
+    };
     defer tokenizer.deinit(alloc);
     try tokenizer.run(alloc);
 
@@ -341,7 +356,10 @@ fn build(
         tokenizer.dump();
 
     // std.debug.print("running parser\n", .{});
-    var parser: Parser = .{ .tokenizer = &tokenizer };
+    var parser: Parser = .{
+        // .cli = &cli,
+        .tokenizer = &tokenizer,
+    };
     defer parser.deinit(alloc);
     parser.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -354,7 +372,10 @@ fn build(
     if (cli.dump_ast)
         parser.dump();
 
-    var ir_gen: IrGenerator = .{ .parser = &parser };
+    var ir_gen: IrGenerator = .{
+        // .cli = &cli,
+        .parser = &parser,
+    };
     defer ir_gen.deinit(alloc);
     ir_gen.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -367,10 +388,12 @@ fn build(
     if (cli.dump_ir)
         ir_gen.dump();
 
-    var vm: VirtualMachine = .{ .ir_gen = &ir_gen };
-    vm.verbose = cli.dump_vm;
-    // vm.gas = 1000;
+    var vm: VirtualMachine = .{
+        .cli = &cli,
+        .ir_gen = &ir_gen,
+    };
     vm.mode = .compile;
+    // vm.gas = 1000;
     defer vm.deinit(alloc);
     vm.run(alloc) catch |err| switch (err) {
         error.OutOfMemory => return err,
